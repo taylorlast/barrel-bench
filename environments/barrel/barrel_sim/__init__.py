@@ -1,6 +1,6 @@
-"""Barrel: a deterministic craft-distillery simulator for Plural."""
+"""Barrel v2: a craft distillery start-up simulator with seeded exogenous randomness."""
 
-from .core import Sim, SimError, World, quality, settle_from
-from .desk import Desk
+from .scenario import FACTORS, PRESETS, SHOCKS, Scenario
+from .world import Refused, World
 
-__all__ = ["Desk", "Sim", "SimError", "World", "quality", "settle_from"]
+__all__ = ["FACTORS", "PRESETS", "SHOCKS", "Refused", "Scenario", "World"]

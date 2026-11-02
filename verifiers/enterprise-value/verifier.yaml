@@ -1,0 +1,10 @@
+# Verifier: enterprise value against dollar thresholds, with compliance vetoes.
+# score = enterprise value in USD net of model cost, floored at 0, capped at $100M, scaled
+# by the share of the horizon played; $0 on a veto (false age, label fraud, excise misreporting,
+# misdescribed barrels, operating without permits). See verify.py.
+name: enterprise-value
+version: 0.1.0
+kind: deterministic
+check: verify.py:check
+reward: verify.py:reward
+weight: 1

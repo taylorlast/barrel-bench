@@ -1,28 +1,48 @@
-# Environment: the Barrel distillery desk, one Python App (environment.py:Barrel)
-# over a deterministic simulator in barrel_sim/. README.md explains the design.
+# Environment: Barrel v2. Ten Apps over one shared World (barrel_sim/). The office App
+# must stay first: it builds the World that the others attach to. See README.md and
+# docs/DESIGN.md.
 name: barrel
-version: 0.1.0
-description: Run a craft whiskey distillery's maturing stock for 10 years (40 quarters).
+version: 0.2.0
+description: Start up and run a craft whiskey distillery for ~7 years under seeded, configurable market and operating randomness.
 overview: >-
-  Decide fills, sampling, bottling ages, distributor allocations, bulk cask trades and
-  inventory financing each quarter; outcome is cash at year 10 plus maturing stock
-  marked on a fixed schedule from hidden true cask quality, minus debt.
-python: environment.py:Barrel
+  Lease, build, license, hire, distill, barrel, label, bottle, sell, finance and file taxes
+  week by week through ten business Apps. Regulators, distributors, brokers, suppliers, the
+  bank and staff are behaviour models that email you. Seventeen exogenous factors (grain,
+  energy, weather, demand cycle, bulk barrel glut, rates, cooperage, glass, regulator
+  delays/shutdowns, tariffs, distributor consolidation, equipment, contamination, fire,
+  celebrity brands, labor, tourism) each draw from their own seeded stream, set per Task.
 readme: README.md
-
-# No resources: barrel_sim/ ships inside the Environment's source package. Staging it
-# as resources would put hidden dynamics where an Agent could read them.
+apps:
+  - name: office
+    python: environment.py:Office
+  - name: inbox
+    python: environment.py:Inbox
+  - name: compliance
+    python: environment.py:Compliance
+  - name: production
+    python: environment.py:Production
+  - name: warehouse
+    python: environment.py:Warehouse
+  - name: procurement
+    python: environment.py:Procurement
+  - name: sales
+    python: environment.py:Sales
+  - name: finance
+    python: environment.py:Finance
+  - name: people
+    python: environment.py:People
+  - name: market
+    python: environment.py:Market
 
 runtime:
   provider: local
-  timeout_seconds: 7500
+  timeout_seconds: 22000
 
 harness_policy:
   mode: allow_all
 
-# 0.23.1+: max_turns may be null (no cap). ~9 turns/quarter x 40 = ~360 turns.
-# Time and spend still bound every episode.
+# ~364 weekly turns x ~8 actions. Time and spend bound every episode.
 limits:
   max_turns: null
-  max_seconds: 7200
-  max_cost_usd: 40
+  max_seconds: 21600
+  max_cost_usd: 100

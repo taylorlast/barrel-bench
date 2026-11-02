@@ -1,0 +1,11 @@
+# Agent: SMOKE TEST ONLY. distillery-operator with the deterministic mock model, so the
+# whole pipeline runs offline with no key. Not part of any Benchmark track.
+name: mock-operator
+version: 0.1.0
+model: openai/gpt-5.6-luna
+harness: distillery-operator
+harness_config:
+  context: notebook
+  model_client: mock
+  max_model_turns: 60
+auth: none
