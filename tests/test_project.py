@@ -1,4 +1,5 @@
 import filecmp
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -7,7 +8,20 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-PLURAL = Path(sys.executable).with_name("plural")
+
+
+def _find_plural_cli():
+    """Locate the plural CLI portably."""
+    found = shutil.which("plural")
+    if found:
+        return Path(found)
+    candidate = Path(sys.executable).parent / "plural"
+    if candidate.exists():
+        return candidate
+    return None
+
+
+PLURAL = _find_plural_cli()
 
 
 def test_vendor_copy_in_sync():
@@ -43,5 +57,7 @@ def test_harness_maps_playbook_args_to_app_tools():
                                        ("verifier", "distillery-outcome"), ("harness", "barrel-scripted"),
                                        ("agent", "cellar-bot"), ("env", "barrel")])
 def test_plural_validate(kind, name):
+    if PLURAL is None:
+        pytest.skip("plural CLI not found on PATH or next to Python executable")
     r = subprocess.run([str(PLURAL), kind, "validate", name], cwd=ROOT, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
