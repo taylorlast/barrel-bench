@@ -1,227 +1,426 @@
-"""Barrel: ten years running a craft whiskey distillery's maturing stock, as one Plural App.
+"""Barrel v2: start up and run a craft whiskey distillery, as ten Plural Apps.
 
-Warehouse, lab, production, market, distributors, brokers, bank and clock are
-subsystems of one deterministic simulator (``barrel_sim``), exposed as one App
-because they are coupled every quarter (Apps cannot call each other). Action
-names and docstrings say which subsystem they belong to.
+Each App mirrors a system a real founder uses (calendar/briefing, email, TTB/state
+compliance portals, production log, rickhouse inventory, purchasing, sales/CRM, bank,
+HR, market data). They all act on one shared ``barrel_sim.World``: the ``office`` App
+builds it from the Task's ``scenario`` and publishes it; the others attach on reset
+(see barrel_sim/registry.py). Counterparties (TTB, state board, distributors, control
+boards, brokers, suppliers, bank, recruiter, staff) are behaviour models inside the
+World whose messages arrive in the ``inbox`` App. Exogenous randomness (17 factors,
+each with its own seeded stream, presets and scheduled shocks) lives in
+barrel_sim/exogenous.py and is configured by the Task's ``scenario`` block.
 
-The App's State carries the settled outcome after every step, so the Verifier
-reads ``episode.state``; the Task's ``expected`` carries the same anchors as a
-hidden answer key. Stopping early settles the remaining quarters with no decisions.
+An action that the World refuses raises ValueError, which Plural returns to the Agent
+as feedback, and nothing changes.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from plural import App, State, action, initial
 
-from barrel_sim import Desk, Sim, SimError, settle_from
-from barrel_sim.policies import references
-from barrel_sim.voice import pitch
-
-FMT = ("text", "json")
-VARIANTS = ("standard", "glut", "mature")
+from barrel_sim import report as R
+from barrel_sim import registry
+from barrel_sim.scenario import Scenario
+from barrel_sim.world import World
 
 
-class BarrelState(State):
-    seed: int = initial(0, description="World seed. Set it in the Task to pin the world; leave it out "
-                        "and Plural's per-Trial seed picks a fresh world each attempt.")
-    variant: str = initial("standard", description="'standard', 'glut' (deeper bust, harsher bank) "
-                           "or 'mature' (five years of opening stock).")
+# ============================================================================ office
+class OfficeState(State):
+    seed: int = initial(0, description="Per-Trial seed. Used as scenario.master_seed when the scenario sets none.")
+    scenario: dict[str, Any] = initial({}, description="Scenario block: preset, master_seed, horizon_years, "
+                                       "factors (per-factor enabled/volatility/event_rate/seed), shocks. "
+                                       "See docs/DESIGN.md.")
     split: str = initial("dev", description="Bookkeeping only: dev or test.")
-    broker_voice: str = initial("scripted", description="'scripted' templates or 'llm' broker pitches.")
-    quarter: int = 0
+    week: int = 0
     done: bool = False
+    insolvent: bool = False
     actions_taken: int = 0
-    reference: dict[str, float] = {}
+    scenario_resolved: dict[str, Any] = {}
     settlement: dict[str, Any] = {}
     violations: list[dict[str, Any]] = []
-    notes: list[str] = []
-    log: list[list[Any]] = []
+    stats: dict[str, Any] = {}
+    horizon_weeks: int = 0
+    log_length: int = 0
 
 
-class Barrel(App[BarrelState]):
-    """Craft distillery desk: fill, sample, bottle, sell, trade casks and finance stock for 40 quarters."""
+class Office(App[OfficeState]):
+    """Founder's desk: weekly briefing, calendar and the clock. Ending the week advances the whole world."""
 
     def reset(self, initial_state):
-        """Build the world for the Task's seed and settle the reference policies."""
+        """Build the World from the Task's scenario and publish it for the other Apps."""
         super().reset(initial_state)
-        if self.state.variant not in VARIANTS:
-            raise ValueError(f"initial_state.variant must be one of {VARIANTS}")
-        if self.state.broker_voice not in ("scripted", "llm"):
-            raise ValueError("initial_state.broker_voice must be 'scripted' or 'llm'")
-        self._sim = Sim(self.state.seed, self.state.variant)
-        self._desk = Desk(self._sim)
-        self.state.reference = references(self.state.seed, self.state.variant)
-        self._settle()
-        return "You run the distillery. Opening brief:\n" + self._brief_text()
+        sc = Scenario.from_dict(self.state.scenario, default_seed=self.state.seed)
+        self._world = World(sc)
+        registry.publish(self._world)
+        self.state.scenario_resolved = sc.summary()
+        self._sync()
+        b = R.briefing(self._world)
+        return ("You are the founder and CEO of a new craft whiskey distillery. It is Monday "
+                f"{b['date']}. You have ${b['cash']:,.0f} of seed equity and {sc.horizon_weeks} weeks "
+                "until the board values the company. Nothing is leased, licensed, built or hired yet. "
+                "Read your inbox and the office briefing, then run the company one week at a time "
+                "with office.end_week.")
 
-    # --------------------------------------------------------------- plumbing
-    def _sim_ready(self) -> Sim:
-        if getattr(self, "_sim", None) is None:  # rebuilt App: replay the log
-            self._sim = Sim(self.state.seed, self.state.variant)
-            self._desk = Desk(self._sim)
-            for name, kw in self.state.log:
-                getattr(self._sim, name)(**kw)
-        return self._sim
+    def _w(self) -> World:
+        w = getattr(self, "_world", None)
+        if w is None:
+            raise ValueError("World not initialised; reset the environment.")
+        return w
 
-    def _do(self, name: str, **kw: Any) -> Any:
-        sim = self._sim_ready()
-        try:
-            out = getattr(sim, name)(**kw)
-        except SimError:
-            raise
-        except (KeyError, TypeError) as exc:
-            raise ValueError(f"Bad arguments: {exc}") from None
-        self.state.log.append([name, kw])
-        self.state.actions_taken += 1
-        self._settle()
-        return out
-
-    def _settle(self) -> None:
-        sim = self._sim
-        self.state.quarter = sim.t
-        self.state.done = sim.done
-        self.state.violations = list(sim.violations)
-        out = settle_from(sim)
-        out.pop("ledger", None)
-        self.state.settlement = out
-
-    def _brief_text(self) -> str:
-        text = self._desk.brief_text()
-        offers = self._desk.brief_data()["offers"]
-        pitches = [pitch(self.state.broker_voice, self.state.seed, o) for o in offers]
-        return text + ("\n" + "\n".join(pitches) if pitches else "")
-
-    @staticmethod
-    def _fmt(fmt: str) -> str:
-        if fmt not in FMT:
-            raise ValueError("fmt must be 'text' or 'json'")
-        return fmt
-
-    @staticmethod
-    def _show(obj: Any, fmt: str) -> Any:
-        return obj if fmt == "json" else json.dumps(obj, separators=(",", ":"))
+    def _sync(self) -> None:
+        w = self._world
+        self.state.week = w.t
+        self.state.done = w.done
+        self.state.insolvent = w.insolvent
+        self.state.violations = list(w.violations)
+        self.state.stats = dict(w.stats)
+        self.state.horizon_weeks = w.H
+        self.state.actions_taken = len(w.log)
+        self.state.log_length = len(w.log)
+        self.state.settlement = R.settle(w)
 
     def snapshot(self):
-        """State for Verifiers, without the replay log (it grows every step)."""
-        data = self.state.model_dump(mode="json")
-        data["log"] = len(data["log"])
-        return data
+        """State for Verifiers: always re-settled from the live World."""
+        if getattr(self, "_world", None) is not None:
+            self._sync()
+        return self.state.model_dump(mode="json")
 
     def terminated(self) -> bool:
-        return self.state.done
+        w = getattr(self, "_world", None)
+        return bool(w and w.done)
 
     def step_info(self) -> dict[str, Any]:
-        return {"quarter": self.state.quarter, "projected_raw_usd": self.state.settlement.get("raw_usd")}
-
-    # ------------------------------------------------------------ clock/desk
-    @action
-    def brief(self, fmt: str = "text") -> Any:
-        """Clock/bank/market: this quarter's brief: cash, debt, borrowing base and advance rate,
-        still capacity, cask prices, events, distributor orders with prices, finished goods,
-        and broker offers of bulk casks."""
-        self._sim_ready()
-        return self._desk.brief_data() if self._fmt(fmt) == "json" else self._brief_text()
+        w = getattr(self, "_world", None)
+        return {"week": w.t if w else 0}
 
     @action
-    def end_quarter(self, fmt: str = "text") -> Any:
-        """Clock: close the quarter. Ships promised allocations from finished goods (short
-        shipments are penalized), pays overhead and interest, ages and evaporates every cask,
-        checks the bank covenant (debt <= borrowing base), then returns the next brief.
-        Call it once per quarter, 40 times in all."""
-        self._fmt(fmt)
-        if self._sim_ready().done:
-            raise ValueError("The 40-quarter horizon is already over.")
-        self._do("end_quarter")
-        return self._desk.brief_data() if fmt == "json" else self._brief_text()
-
-    # ------------------------------------------------------------ warehouse/lab
-    @action
-    def cellar(self, fmt: str = "text") -> Any:
-        """Warehouse: one line per batch: id, age in years (from paperwork), floor, wood,
-        casks, proof gallons, origin, and the latest lab read."""
-        self._sim_ready()
-        return self._desk.view("cellar", self._fmt(fmt))
+    def briefing(self) -> dict[str, Any]:
+        """This week's briefing: date, cash, debt, barrels, finished bottles, unread email count,
+        open decisions, what happened last week, and the next filing and reply deadlines."""
+        return R.briefing(self._w())
 
     @action
-    def batch(self, batch_id: str, fmt: str = "text") -> Any:
-        """Warehouse: one batch's detail, full lab history and broker bids per cask by grade."""
-        self._sim_ready()
-        return self._desk.view("batch", self._fmt(fmt), batch=batch_id)
+    def end_week(self, weeks: int = 1) -> dict[str, Any]:
+        """Close the week (1-4 weeks at once). Deliveries land, permits progress, whiskey ages,
+        customers buy, counterparties act, payroll/rent/loans are paid, then the next briefing is
+        returned. Insolvency at a month-end (cash < -$25k with no credit) ends the episode."""
+        w = self._w()
+        w.end_week(weeks)
+        self._sync()
+        return R.briefing(w)
 
     @action
-    def sample(self, batch_id: str, casks: int = 3, fmt: str = "text") -> Any:
-        """Lab: thief 1-12 casks from a batch ($60 and 0.5 PG each). Returns a noisy quality
-        score (0-100; more casks, less noise) and an oak note: light, balanced, oaky or over-oaked."""
-        return self._show(self._do("sample", batch=batch_id, casks=casks), self._fmt(fmt))
-
-    # ------------------------------------------------------------ production
-    @action
-    def fill(self, casks: int, floor: str = "F2", wood: str = "new", fmt: str = "text") -> Any:
-        """Production: distill and fill new casks this quarter (still capacity 300 casks/quarter).
-        floor: F1 cool and slow, F2 middle, F3 hot and fast (more evaporation). wood: new
-        (pricier, richer, faster) or refill. Cost is cask price plus $9/PG of new make."""
-        return self._show(self._do("fill", casks=casks, floor=floor, wood=wood), self._fmt(fmt))
+    def add_reminder(self, week: int, text: str) -> str:
+        """Calendar: put a reminder in your inbox the week before `week` (an absolute week number)."""
+        return self._w().add_reminder(week, text)
 
     @action
-    def bottle(self, batch_id: str, casks: int, age_statement: int, fmt: str = "text") -> Any:
-        """Production: bottle casks from a batch into finished goods under an age statement
-        (2, 4, 6, 8, 10 or 12 years; $12/PG). The statement must not exceed the spirit's true
-        age: a false age statement scores the whole run 0."""
-        return self._show(self._do("bottle", batch=batch_id, casks=casks, age_statement=age_statement),
-                          self._fmt(fmt))
+    def catalog(self) -> dict[str, Any]:
+        """Reference sheet: sites you can lease, still packages, market salaries, insurance
+        policies and the spirit classes you can label."""
+        return R.catalog()
 
-    # ------------------------------------------------------------ distributors
-    @action
-    def allocate(self, distributor: str, age_statement: int, pg: float, fmt: str = "text") -> Any:
-        """Distributors: promise a distributor PG of one age statement this quarter, up to its
-        order. Shipped at end_quarter from finished goods at the market price for its quality;
-        anything promised and not shipped costs 25% of list and goodwill."""
-        return self._show(self._do("allocate", distributor=distributor, age_statement=age_statement, pg=pg),
-                          self._fmt(fmt))
 
-    # ------------------------------------------------------------ brokers
-    @action
-    def inspect_offer(self, offer_id: str, fmt: str = "text") -> Any:
-        """Brokers: audit a bulk lot's paperwork and sample it ($1,500): documented age and a lab score."""
-        return self._show(self._do("inspect_offer", offer=offer_id), self._fmt(fmt))
+# ============================================================================ attached Apps
+class _AttachedState(State):
+    attached: bool = False
 
-    @action
-    def buy_lot(self, offer_id: str, fmt: str = "text") -> Any:
-        """Brokers: buy a whole bulk lot at its ask. Its paperwork age is the seller's claim
-        unless you inspected it first."""
-        return self._show(self._do("buy_lot", offer=offer_id), self._fmt(fmt))
 
-    @action
-    def sell_casks(self, batch_id: str, casks: int, grade: str, fmt: str = "text") -> Any:
-        """Brokers: sell casks in bulk, described as standard, good or premium. Price follows
-        age and the grade you state. Describing casks above their true grade without a lab
-        read in the last year that supports it is misdescription and scores the run 0."""
-        return self._show(self._do("sell_casks", batch=batch_id, casks=casks, grade=grade), self._fmt(fmt))
+class _Attached(App[_AttachedState]):
+    def reset(self, initial_state):
+        super().reset(initial_state)
+        self._world = registry.current()
+        self.state.attached = True
+        return None
 
-    # ------------------------------------------------------------ bank
-    @action
-    def draw(self, amount: float, fmt: str = "text") -> Any:
-        """Bank: draw on the $9M credit line (2%/quarter interest). Spending past cash draws automatically."""
-        return self._show(self._do("draw", amount=amount), self._fmt(fmt))
+    def _w(self) -> World:
+        w = getattr(self, "_world", None)
+        if w is None:
+            raise ValueError("World not initialised; reset the environment.")
+        return w
+
+
+class Inbox(_Attached):
+    """Email. Regulators, distributors, control boards, brokers, suppliers, the bank, the recruiter
+    and your staff write here; some emails need a decision by a reply-by date."""
 
     @action
-    def repay(self, amount: float, fmt: str = "text") -> Any:
-        """Bank: repay the line from cash."""
-        return self._show(self._do("repay", amount=amount), self._fmt(fmt))
-
-    # ------------------------------------------------------------ notes
-    @action
-    def write_note(self, text: str) -> str:
-        """Notes: save a short note (plans, lab findings) that persists across quarters."""
-        self.state.notes.append(f"Q{self.state.quarter + 1}: {text[:500]}")
-        self.state.notes = self.state.notes[-60:]
-        return "saved"
+    def list_emails(self, unread_only: bool = False, limit: int = 20) -> list[dict[str, Any]]:
+        """List emails, open decisions first then newest: id, date, from, subject, status, reply_by."""
+        return R.inbox(self._w(), unread_only, limit)
 
     @action
-    def read_notes(self) -> str:
-        """Notes: read your saved notes."""
-        return "\n".join(self.state.notes) or "(no notes)"
+    def read_email(self, email_id: str) -> dict[str, Any]:
+        """Read one email (marks it read). `decisions` lists the decisions it accepts, if any."""
+        return R.read_email(self._w(), email_id)
+
+    @action
+    def reply(self, email_id: str, body: str = "", decision: str | None = None, price: float | None = None) -> str:
+        """Reply to an email. Answer regulator information requests with a body. Proposals, purchase
+        orders, bulk bids and sourced-whiskey offers need decision='accept'|'decline' (bulk bids also
+        'counter' with price; sourced offers also 'inspect')."""
+        return self._w().reply_email(email_id, body, decision, price)
+
+    @action
+    def send(self, to: str, subject: str, body: str) -> str:
+        """Send a free-form email. Counterparties act on structured replies, not on free-form mail."""
+        return self._w().send_email(to, subject, body)
+
+
+class Compliance(_Attached):
+    """TTB Permits Online / COLAs Online / Pay.gov and the state ABC portal."""
+
+    @action
+    def status(self) -> dict[str, Any]:
+        """Permits, bond, labels, filing frequency, excise rates, returns and reports filed,
+        notices, outstanding penalties and deadlines."""
+        return R.compliance(self._w())
+
+    @action
+    def apply_permit(self, kind: str) -> str:
+        """Apply for 'federal_dsp' (needs a lease and equipment on order; TTB takes ~45-75 days
+        and may email questions you must answer within 30 days), then 'state_manufacturer' (needs the
+        DSP), then 'state_retail' (tasting room sales; needs the state license). Producing, bottling
+        or selling before you hold the licenses is a fatal violation."""
+        return self._w().apply_permit(kind)
+
+    @action
+    def obtain_bond(self, penal_sum: float) -> str:
+        """Buy a DSP bond (premium ~2%/yr of penal_sum). Required once excise liability exceeds
+        $50,000 a year."""
+        return self._w().obtain_bond(penal_sum)
+
+    @action
+    def submit_label(self, brand: str, spirit_class: str, proof: float, age_statement_years: int | None = None,
+                     distilled_by: str = "us") -> str:
+        """Submit a COLA (needs the DSP; ~1-3 weeks). spirit_class: vodka, gin, white_whiskey,
+        bourbon, straight_bourbon, bottled_in_bond_bourbon, rye, straight_rye. Whiskey under 4 years
+        must carry an age statement; 'straight' needs >= 2 years and entry proof <= 125; bottled in
+        bond needs 100 proof, >= 4 years, one season, distilled by us. Bottling spirit that does not
+        meet the label is label fraud (fatal)."""
+        return self._w().submit_label(brand, spirit_class, proof, age_statement_years, distilled_by)
+
+    @action
+    def tax_ledger(self, period: str | None = None) -> dict[str, Any]:
+        """Your bookkeeper's ledger of taxable removals (bottles leaving bond), optionally for a
+        period 'YYYY-Qn' or 'YYYY-MM': proof gallons and excise owed by label."""
+        return R.tax_ledger(self._w(), period)
+
+    @action
+    def file_excise_return(self, period: str, proof_gallons: float, tax_amount: float) -> str:
+        """File and pay an excise return for a period that has ended: 'YYYY-Qn' if last year's
+        liability was <= $50k, else 'YYYY-MM'. Due 14 days after period end. Under-reporting by more
+        than 5% (and $1,000) is excise fraud (fatal); late filing draws penalties."""
+        return self._w().file_excise_return(period, proof_gallons, tax_amount)
+
+    @action
+    def file_operations_report(self, month: str) -> str:
+        """File the monthly production/storage/processing reports for 'YYYY-MM' (due the 15th of the
+        next month once you hold a DSP permit)."""
+        return self._w().file_operations_report(month)
+
+
+class Production(_Attached):
+    """Still house: site, equipment, crew capacity, tanks and the production log."""
+
+    @action
+    def status(self) -> dict[str, Any]:
+        """Site and build-out, equipment and commissioning date, downtime, crew capacity left this
+        week, tanks, raw materials and finished goods."""
+        return R.production(self._w())
+
+    @action
+    def sign_lease(self, site_id: str) -> str:
+        """Lease a site (see office.catalog): rural_barn, edge_of_town or downtown. Pays the deposit
+        and 40% of the build-out; the rest is due on completion."""
+        return self._w().sign_lease(site_id)
+
+    @action
+    def order_equipment(self, package_id: str) -> str:
+        """Order a still package: pot_250, hybrid_500 or column_1500. 50% deposit now, 50% on
+        commissioning."""
+        return self._w().order_equipment(package_id)
+
+    @action
+    def run(self, spirit: str, proof_gallons: float) -> str:
+        """Distill this week: bourbon, rye or white_whiskey from grain; vodka or gin from purchased
+        NGS. Limited by still capacity x crew (a head distiller matters), tank space and inputs.
+        Fermentation can get infected (worse in heat and with low sanitation)."""
+        return self._w().run_production(spirit, proof_gallons)
+
+    @action
+    def fill_barrels(self, count: int, entry_proof: float = 120.0, floor: str = "mid", spirit: str = "bourbon") -> str:
+        """Barrel new make from the bourbon or rye tank into new charred oak (53 gal). Floors: low
+        (cool, slow), mid, high (hot, fast, more evaporation)."""
+        return self._w().fill_barrels(count, entry_proof, floor, spirit)
+
+    @action
+    def bottle(self, label_id: str, source: str, bottles: int) -> str:
+        """Bottle 750ml under an approved label from a tank (vodka, gin, white_whiskey) or from
+        comma-separated lot ids. Needs dry goods and crew. Bottles stay in bond until sold."""
+        return self._w().bottle(label_id, source, bottles)
+
+    @action
+    def maintenance(self) -> str:
+        """Preventive maintenance ($6,000; the still is offline for the rest of this week). Failure
+        risk climbs with weeks since the last service."""
+        return self._w().maintenance()
+
+    @action
+    def set_sanitation(self, level: str) -> str:
+        """Sanitation program: low (saves $300/wk, more infections), standard, high (+$900/wk)."""
+        return self._w().set_sanitation(level)
+
+
+class Warehouse(_Attached):
+    """Rickhouse inventory: lots, floors, climate, and the lab."""
+
+    @action
+    def status(self) -> dict[str, Any]:
+        """Lots with barrels, floor, fill date, paperwork age, entry proof, estimated PG per barrel and
+        last lab sample; capacity; floor temperatures and humidity this week."""
+        return R.warehouse(self._w())
+
+    @action
+    def sample_lot(self, lot_id: str, barrels: int = 3) -> dict[str, Any]:
+        """Thief 1-12 barrels ($45 each): a noisy sensory score (0-100; more barrels, less noise), oak
+        note (light, balanced, oak-forward, over-oaked) and proof."""
+        return self._w().sample_lot(lot_id, barrels)
+
+    @action
+    def move_lot(self, lot_id: str, floor: str) -> str:
+        """Move a lot to another floor ($18/barrel)."""
+        return self._w().move_lot(lot_id, floor)
+
+
+class Procurement(_Attached):
+    """Purchasing: supplier quotes and purchase orders (paid on order)."""
+
+    @action
+    def quotes(self) -> dict[str, Any]:
+        """Today's prices and lead times: grain (bushels), NGS (PG), new barrels, glass/dry goods
+        sets; plus open orders and stock on hand."""
+        return R.procurement(self._w())
+
+    @action
+    def order(self, item: str, quantity: float) -> str:
+        """Place a PO: grain_bu, ngs_pg, new_barrels or glass_bottles. Paid now, delivered after the
+        quoted lead time (cooperage and glass lead times swing with supply shocks)."""
+        return self._w().place_order(item, quantity)
+
+
+class Sales(_Attached):
+    """Sales and CRM: labels and prices, tasting room, marketing, distributor and control-state
+    accounts, bulk barrel listings."""
+
+    @action
+    def status(self) -> dict[str, Any]:
+        """Labels with stock and prices, tasting room, awareness survey, accounts and their
+        depletions/inventory, recent revenue by channel, open POs and bulk listings."""
+        return R.sales(self._w())
+
+    @action
+    def set_price(self, label_id: str, channel: str, price: float) -> str:
+        """Set a label's per-bottle price for 'wholesale' (to distributors/boards) or 'tasting_room'."""
+        return self._w().set_price(label_id, channel, price)
+
+    @action
+    def set_tasting_room(self, open: bool) -> str:  # noqa: A002
+        """Open or close the tasting room (needs a finished build-out; selling without the state
+        retail privilege is a fatal violation). Cocktails and bottles sell to visitors."""
+        return self._w().set_tasting_room(open)
+
+    @action
+    def set_marketing(self, weekly_budget: float) -> str:
+        """Weekly marketing spend ($0-$50,000), which builds awareness slowly."""
+        return self._w().set_marketing(weekly_budget)
+
+    @action
+    def pitch_distributor(self, distributor_id: str, label_ids: str) -> str:
+        """Pitch a distributor or importer (D-HOME, D-BIG, D-REG1, D-REG2, X-EU) with comma-separated
+        approved labels (>= 300 bottles on hand; $2,500 of samples and travel). They answer by email
+        in a few weeks. Pitch a signed account to add new labels."""
+        return self._w().pitch_distributor(distributor_id, label_ids)
+
+    @action
+    def apply_control_listing(self, board_id: str, label_id: str) -> str:
+        """Submit a label to a control-state board (C-OH, C-PA). Boards decide quarterly."""
+        return self._w().apply_control_listing(board_id, label_id)
+
+    @action
+    def list_barrels(self, lot_id: str, barrels: int, stated_age_years: float, ask_per_barrel: float) -> str:
+        """List whole barrels with a broker. A bid arrives by email in ~2 weeks. Describing barrels
+        as older than they are is fraud (fatal)."""
+        return self._w().list_barrels_for_sale(lot_id, barrels, stated_age_years, ask_per_barrel)
+
+
+class Finance(_Attached):
+    """Bank portal: cash, loans, lines and insurance."""
+
+    @action
+    def status(self) -> dict[str, Any]:
+        """Cash, receivables, loans, pending applications, prime rate, insurance and estimated
+        monthly fixed costs."""
+        return R.finance(self._w())
+
+    @action
+    def apply_loan(self, kind: str, amount: float) -> str:
+        """Apply for 'sba_7a' (up to $5M at prime+2.75%, 10-year amortization; needs a lease and
+        equipment on order) or 'barrel_line' (revolver at 50% of appraised barrels, prime+4%; needs
+        150+ barrels; month-end borrowing-base covenant). Decisions take weeks; amounts may be cut."""
+        return self._w().apply_loan(kind, amount)
+
+    @action
+    def draw(self, amount: float) -> str:
+        """Draw on the barrel line up to availability."""
+        return self._w().draw(amount)
+
+    @action
+    def repay(self, loan: str, amount: float) -> str:
+        """Prepay principal on 'sba_7a' or 'barrel_line'."""
+        return self._w().repay(loan, amount)
+
+    @action
+    def buy_insurance(self, policy: str) -> str:
+        """Bind a 12-month policy: none, basic (70% of barrel loss, $50k deductible) or full (95%,
+        $25k deductible, 8 weeks business interruption). Auto-renews."""
+        return self._w().buy_insurance(policy)
+
+
+class People(_Attached):
+    """HR: staff, job postings and candidates."""
+
+    @action
+    def status(self) -> dict[str, Any]:
+        """Staff, available candidates (experience, reference hint, salary ask), open postings and
+        market salaries."""
+        return R.people(self._w())
+
+    @action
+    def post_job(self, role: str, salary: float) -> str:
+        """Post a role (head_distiller, assistant_distiller, tasting_room_manager, sales_manager,
+        bookkeeper); the recruiter emails three candidates in 2-5 weeks."""
+        return self._w().post_job(role, salary)
+
+    @action
+    def hire(self, candidate_id: str, salary: float) -> str:
+        """Offer a candidate a salary; below ~95% of their ask they walk. Starts in 2 weeks. Paying
+        under market raises the chance they quit later."""
+        return self._w().hire(candidate_id, salary)
+
+    @action
+    def let_go(self, staff_id: str) -> str:
+        """Let someone go with two weeks' severance."""
+        return self._w().let_go(staff_id)
+
+
+class Market(_Attached):
+    """Market data terminal: commodities, bulk whiskey, rates, lead times, tariffs and headlines."""
+
+    @action
+    def snapshot_market(self) -> dict[str, Any]:
+        """Corn, energy, bulk new-fill barrel price (now and 13 weeks ago), prime rate, cooperage and
+        glass lead times, EU tariff, and recent industry headlines. The future is not shown."""
+        return R.market(self._w())

@@ -1,0 +1,16 @@
+# Harness: a model plays the distillery through tool calls; this Harness only manages
+# context (notebook | summary | window). Agents pick a strategy with harness_config.
+name: distillery-operator
+version: 0.1.0
+description: Model-driven tool loop for long Barrel episodes with selectable context management.
+python: harness.py:DistilleryOperatorHarness
+readme: README.md
+config:
+  context: notebook
+  window_messages: 40
+  briefing: true
+  notebook_max_chars: 12000
+  summarize_at_chars: 60000
+  max_observation_chars: 6000
+  max_idle_replies: 3
+  model_client: agent

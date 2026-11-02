@@ -1,0 +1,10 @@
+# Agent: a model driven through distillery-operator with summary context management.
+# Needs a model key; same model across operators so only the harness strategy differs.
+name: summary-operator
+version: 0.1.0
+model: openai/gpt-5.6-luna
+harness: distillery-operator
+harness_config:
+  context: summary
+instructions: >-
+  Run the company like a careful founder. Read the inbox and reply before deadlines, file every return on time and honestly, never put an age or class on a label the whiskey has not earned, and keep enough cash to survive bad luck. Batch several tool calls per turn and close each week with end_week.

@@ -1,0 +1,22 @@
+# Task: one Barrel v2 world (realistic, shutdown during permitting). The scenario block
+# controls every external factor: preset, master seed, per-factor seed/volatility/
+# event_rate/enabled, and scheduled shocks. Same block => same world.
+name: barrel-dev-shutdown-4
+version: 0.1.0
+instructions: instruction.md
+environment: barrel
+verifiers:
+- enterprise-value
+initial_state:
+  office:
+    split: dev
+    scenario:
+      preset: realistic
+      master_seed: 4
+      horizon_years: 7.0
+      seed_capital: 2000000
+      target_moic: 3.0
+      shocks:
+      - week: 8
+        event: government_shutdown
+        weeks: 10

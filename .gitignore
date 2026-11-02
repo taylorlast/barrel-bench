@@ -1,5 +1,5 @@
-.plural/
-__pycache__/
-.venv/
-.pytest_cache/
 *.pyc
+.plural/
+.pytest_cache/
+.venv/
+__pycache__/

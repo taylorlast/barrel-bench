@@ -1,0 +1,18 @@
+# Task: one Barrel v2 world (volatile). The scenario block
+# controls every external factor: preset, master seed, per-factor seed/volatility/
+# event_rate/enabled, and scheduled shocks. Same block => same world.
+name: barrel-dev-volatile-3
+version: 0.1.0
+instructions: instruction.md
+environment: barrel
+verifiers:
+- enterprise-value
+initial_state:
+  office:
+    split: dev
+    scenario:
+      preset: volatile
+      master_seed: 3
+      horizon_years: 7.0
+      seed_capital: 2000000
+      target_moic: 3.0

@@ -1,0 +1,26 @@
+# Task: one Barrel v2 world (realistic, boom then glut). The scenario block
+# controls every external factor: preset, master seed, per-factor seed/volatility/
+# event_rate/enabled, and scheduled shocks. Same block => same world.
+name: barrel-test-boom-106
+version: 0.1.0
+instructions: instruction.md
+environment: barrel
+verifiers:
+- enterprise-value
+initial_state:
+  office:
+    split: test
+    scenario:
+      preset: realistic
+      master_seed: 106
+      horizon_years: 7.0
+      seed_capital: 2000000
+      target_moic: 3.0
+      factors:
+        demand:
+          start_regime: boom
+          volatility: 1.5
+      shocks:
+      - week: 120
+        event: demand_regime
+        regime: glut

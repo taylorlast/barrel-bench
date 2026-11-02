@@ -1,59 +1,38 @@
-# Benchmark: Barrel test split. Results rank on the distillery-outcome score only.
+# Benchmark: Barrel v2 test split.
 name: barrel
-version: 0.1.0
-description: Run a craft whiskey distillery's maturing stock for 10 years, 40 quarters.
+version: 0.2.0
+description: Start up and run a craft whiskey distillery for seven years in a world you do not control.
 purpose: >-
-  Measures long-horizon business judgment when the payoff arrives years after the
-  decision: whether an Agent lays down the right spirit, samples and bottles it at the
-  right age for the market, trades bulk casks without being fooled or fooling anyone,
-  and keeps its inventory-backed loan inside the bank's terms through a boom and a glut.
+  Measures long-horizon operating judgment under exogenous uncertainty: permitting and
+  compliance, capital and debt, production and maturation, distribution and pricing,
+  negotiating with counterparties by email, and surviving shocks (fires, shutdowns,
+  tariffs, demand cycles, input price spikes) whose randomness is seeded per factor.
 success: >-
-  An attempt at 1.0 matches or beats a hindsight oracle on the same world; 0.0 is at or
-  below a fixed fill-200-and-bottle-at-4-years baseline, or was vetoed for a false age
-  statement or a misdescribed cask.
+  The score is the company's enterprise value in US dollars at the horizon, net of the
+  Agent's model cost. More is better; $2,000,000 is the seed money handed over at week 0,
+  so anything below it destroyed value. $0 on a compliance veto (false age statement, label fraud, excise misreporting,
+  misdescribed barrels, unpermitted operation).
 limitations:
-  - "The oracle is the best of a grid of policies run with perfect information, not a proven optimum; scores are clamped at 1."
-  - "Broker and distributor text is templated by default (broker_voice: llm phrases pitches with a model; numbers never change)."
-  - "The scripted baseline never breaches the covenant; bank pressure bites only on levered strategies."
-  - "Few Tasks; per-world normalization makes worlds comparable but the split is small."
+  - "Counterparties are behaviour models with templated email, not people; voice: llm only rephrases."
+  - "Economics are calibrated from public sources (docs/RESEARCH.md) but simplified; one state, one company."
+  - "Episodes are long (hundreds of model turns); results have high variance per world."
 tasks:
-  - barrel-test-101
-  - barrel-test-102
-  - barrel-test-103
-  - barrel-test-glut-104
-  - barrel-test-mature-105
-categories:
-  - id: standard
-    name: Standard cycle
-    description: Four years of opening stock, one boom and one glut.
-    tasks: [barrel-test-101, barrel-test-102, barrel-test-103]
-  - id: stress
-    name: Glut and mature
-    description: A deeper bust with a harsher bank, or five years of opening stock.
-    tasks: [barrel-test-glut-104, barrel-test-mature-105]
+  - barrel-test-boom-106
+  - barrel-test-crisis-104
+  - barrel-test-fire-105
+  - barrel-test-realistic-101
+  - barrel-test-realistic-102
+  - barrel-test-volatile-103
 scoring:
-  metric: Distillery value, baseline-to-oracle
+  metric: Enterprise value (USD)
   description: >-
-    (raw_usd - baseline_usd) / (oracle_usd - baseline_usd), clamped to [0, 1], where
-    raw_usd is year-10 cash minus debt plus the fixed-schedule mark of casks and bottles,
-    minus the Agent's model cost; 0 when an honesty veto fired.
+    Year-7 enterprise value in USD (cash + receivables - debt - taxes owed + barrels at
+    fair value + goods + equipment salvage + brand) minus the Agent's model cost, floored
+    at $0 and capped at $100M, scaled by the share of the horizon played; $0 on a veto.
+    Named scores include moic and normalized (0-1 toward the 3x target).
   aggregation: weighted_mean
-  score_range: [0.0, 1.0]
-  success_threshold: 0.5
+  score_range: [0.0, 100000000.0]
+  success_threshold: null
   agent_failure: zero
   infrastructure_error: exclude
-  # A Harness killed past its time scores like a run that stopped: the App has
-  # already settled the remaining quarters with no decisions.
   harness_timeout: agent_failure
-tracks:
-  - id: models
-    name: Models, built-in loop
-    kind: models
-    description: Built-in native Harness, no extra instructions, Environment actions only.
-    attempts: 3
-    instructions: none
-  - id: agents
-    name: Complete agents
-    kind: agents
-    description: Any Harness and instructions within the Environment limits.
-    attempts: 3

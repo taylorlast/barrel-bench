@@ -1,9 +1,0 @@
-# Agent: the scripted "cellar" policy through barrel-scripted, picked by harness_config
-# (new in 0.25.0 for custom Harnesses). The model is recorded but never called.
-name: cellar-bot
-version: 0.1.0
-model: openai/gpt-5.6-luna
-harness: barrel-scripted
-harness_config:
-  policy: cellar
-auth: none
