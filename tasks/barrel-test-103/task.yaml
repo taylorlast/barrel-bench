@@ -1,0 +1,19 @@
+# Task: one 10-year Barrel world. The seed pins the world, so every attempt faces the
+# same demand cycle, shocks, brokers and casks. `expected` is the hidden answer key
+# (Verifiers only): baseline and oracle anchors, written by scripts/make_tasks.py.
+name: barrel-test-103
+version: 0.1.0
+instructions: instruction.md
+environment: barrel
+verifiers:
+- distillery-outcome
+initial_state:
+  seed: 103
+  variant: standard
+  split: test
+  broker_voice: scripted
+expected:
+  do_nothing_usd: -455772.75
+  baseline_usd: 9442511.39
+  cellar_usd: 19057577.07
+  oracle_usd: 22578519.82

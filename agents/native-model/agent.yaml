@@ -1,0 +1,8 @@
+# Agent: a model in Plural's built-in tool loop (native). Needs a configured model
+# key (plural auth login, or a provider key); not run in this prototype.
+name: native-model
+version: 0.1.0
+model: openai/gpt-5.6-luna
+instructions: >-
+  Batch several tool calls per turn and end most turns with end_quarter. Never stop
+  before quarter 40 closes. Keep plans in write_note.

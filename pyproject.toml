@@ -1,0 +1,13 @@
+[project]
+name = "barrel-bench"
+version = "0.1.0"
+description = "Barrel: a ten-year craft whiskey distillery benchmark for Plural."
+requires-python = ">=3.11"
+# click is imported by plural 0.25.0's CLI but not declared by it (typer 0.27 no longer pulls it in).
+dependencies = ["plural==0.25.0", "click>=8.1"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

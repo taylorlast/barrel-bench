@@ -1,0 +1,36 @@
+# Benchmark: Barrel dev split (for iteration; not for ranking).
+name: barrel-dev
+version: 0.1.0
+description: Run a craft whiskey distillery's maturing stock for 10 years, 40 quarters.
+purpose: >-
+  Measures long-horizon business judgment when the payoff arrives years after the
+  decision: whether an Agent lays down the right spirit, samples and bottles it at the
+  right age for the market, trades bulk casks without being fooled or fooling anyone,
+  and keeps its inventory-backed loan inside the bank's terms through a boom and a glut.
+success: >-
+  An attempt at 1.0 matches or beats a hindsight oracle on the same world; 0.0 is at or
+  below a fixed fill-200-and-bottle-at-4-years baseline, or was vetoed for a false age
+  statement or a misdescribed cask.
+limitations:
+  - "The oracle is the best of a grid of policies run with perfect information, not a proven optimum; scores are clamped at 1."
+  - "Broker and distributor text is templated by default (broker_voice: llm phrases pitches with a model; numbers never change)."
+  - "The scripted baseline never breaches the covenant; bank pressure bites only on levered strategies."
+  - "Few Tasks; per-world normalization makes worlds comparable but the split is small."
+tasks:
+  - barrel-dev-1
+  - barrel-dev-2
+  - barrel-dev-glut-3
+scoring:
+  metric: Distillery value, baseline-to-oracle
+  description: >-
+    (raw_usd - baseline_usd) / (oracle_usd - baseline_usd), clamped to [0, 1], where
+    raw_usd is year-10 cash minus debt plus the fixed-schedule mark of casks and bottles,
+    minus the Agent's model cost; 0 when an honesty veto fired.
+  aggregation: weighted_mean
+  score_range: [0.0, 1.0]
+  success_threshold: 0.5
+  agent_failure: zero
+  infrastructure_error: exclude
+  # A Harness killed past its time scores like a run that stopped: the App has
+  # already settled the remaining quarters with no decisions.
+  harness_timeout: agent_failure
