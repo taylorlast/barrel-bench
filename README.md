@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/hero.jpg" alt="An AI-run copper pot still distillery at dusk" width="100%">
+  <img src="docs/images/hero.jpg" alt="A rustic rickhouse of aging oak barrels" width="100%">
 </p>
 
 <h1 align="center">🥃 Barrel</h1>
