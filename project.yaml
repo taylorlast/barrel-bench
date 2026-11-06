@@ -1,4 +1,4 @@
 # Plural project identity. Resources live in the directories beside this file.
 schema_version: 1
 name: barrel-bench
-description: Barrel v2, start up and run a craft whiskey distillery in a seeded, uncontrollable world.
+description: "Barrel v3: a craft whiskey distillery with procedural counterparties in a seeded, uncontrollable world."

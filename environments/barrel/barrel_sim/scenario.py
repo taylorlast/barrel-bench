@@ -2,6 +2,7 @@
 
 Every exogenous factor draws from its own stream, ``Random(f"{master_seed}|{factor}|{seed}")``,
 so changing one factor's seed, volatility or enable flag never reshuffles another factor.
+Counterparties draw from a separate stream, ``Random(f"{master_seed}|parties|{seed}")``.
 """
 
 from __future__ import annotations
@@ -45,6 +46,67 @@ class FactorConfig:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+
+CP_KEYS = ("seed", "voice", "model", "models", "mode", "temperature", "replay_path",
+           "transcript_path", "inbound_rate", "churn_rate", "populations", "temperament")
+CP_MODES = ("auto", "llm", "rule", "replay")
+
+
+@dataclass
+class CounterpartyConfig:
+    """Knobs for the procedural counterparty market. Independent of the 17 factor streams."""
+    seed: int | str | None = None
+    voice: str = "template"
+    model: str | None = None
+    models: dict[str, str] = field(default_factory=dict)
+    mode: str = "auto"
+    temperature: float = 0.6
+    replay_path: str | None = None
+    transcript_path: str | None = None
+    inbound_rate: float = 1.0
+    churn_rate: float = 1.0
+    populations: dict[str, Any] = field(default_factory=dict)
+    temperament: dict[str, float] = field(default_factory=dict)
+
+
+def _parse_counterparties(raw: dict[str, Any], *, default_voice: str) -> CounterpartyConfig:
+    bad = set(raw) - set(CP_KEYS)
+    if bad:
+        raise ValueError(f"unknown counterparties keys: {sorted(bad)}; known: {', '.join(CP_KEYS)}")
+    voice = str(raw.get("voice", default_voice))
+    if voice not in ("template", "llm", "replay"):
+        raise ValueError("counterparties.voice must be 'template', 'llm' or 'replay'")
+    mode = str(raw.get("mode", "auto")).strip().lower()
+    if mode not in CP_MODES:
+        raise ValueError("counterparties.mode must be 'auto', 'llm', 'rule' or 'replay'")
+    models = dict(raw.get("models") or {})
+    for role, mid in models.items():
+        if not isinstance(role, str) or not isinstance(mid, str) or not mid.strip():
+            raise ValueError(f"counterparties.models.{role} must be a model id string")
+    temp = float(raw.get("temperature", 0.6))
+    if not 0.0 <= temp <= 1.5:
+        raise ValueError("counterparties.temperature must be 0-1.5")
+    pops = dict(raw.get("populations") or {})
+    for name, spec in pops.items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"counterparties.populations.{name} must be a mapping of min/max")
+    temper = dict(raw.get("temperament") or {})
+    for k, v in temper.items():
+        try:
+            float(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"counterparties.temperament.{k} must be a number") from None
+    return CounterpartyConfig(
+        seed=raw.get("seed"), voice=voice, model=raw.get("model"),
+        models=models, mode=mode,
+        temperature=temp, replay_path=raw.get("replay_path"),
+        transcript_path=raw.get("transcript_path"),
+        inbound_rate=float(raw.get("inbound_rate", 1.0)),
+        churn_rate=float(raw.get("churn_rate", 1.0)),
+        populations=pops, temperament=temper,
+    )
+
+
 @dataclass
 class Scenario:
     master_seed: int = 0
@@ -54,8 +116,13 @@ class Scenario:
     seed_capital: float = 2_000_000.0
     target_moic: float = 3.0
     voice: str = "template"
+    counterparties: CounterpartyConfig = field(default_factory=lambda: CounterpartyConfig())
     factors: dict[str, FactorConfig] = field(default_factory=dict)
     shocks: list[dict[str, Any]] = field(default_factory=list)
+
+    def party_stream_key(self) -> str:
+        s = self.counterparties.seed
+        return f"{self.master_seed}|parties|{'' if s is None else s}"
 
     @property
     def horizon_weeks(self) -> int:
@@ -76,7 +143,7 @@ class Scenario:
             raise ValueError(f"scenario.preset must be one of {sorted(PRESETS)}")
         p = PRESETS[preset]
         unknown = set(data) - {"preset", "master_seed", "seed", "horizon_years", "start_regime", "factors",
-                               "shocks", "seed_capital", "target_moic", "voice"}
+                               "shocks", "seed_capital", "target_moic", "voice", "counterparties"}
         if unknown:
             raise ValueError(f"unknown scenario keys: {sorted(unknown)}")
         seed = data.get("master_seed", data.get("seed", default_seed))
@@ -86,8 +153,10 @@ class Scenario:
                  seed_capital=float(data.get("seed_capital", 2_000_000.0)),
                  target_moic=float(data.get("target_moic", 3.0)),
                  voice=str(data.get("voice", "template")))
-        if sc.voice not in ("template", "llm"):
-            raise ValueError("scenario.voice must be 'template' or 'llm'")
+        if sc.voice not in ("template", "llm", "replay"):
+            raise ValueError("scenario.voice must be 'template', 'llm' or 'replay'")
+        sc.counterparties = _parse_counterparties(data.get("counterparties") or {}, default_voice=sc.voice)
+        sc.voice = sc.counterparties.voice
         overrides = data.get("factors") or {}
         bad = set(overrides) - set(FACTORS)
         if bad:
@@ -116,4 +185,8 @@ class Scenario:
         return {"preset": self.preset, "master_seed": self.master_seed, "horizon_weeks": self.horizon_weeks,
                 "start_regime": self.start_regime,
                 "disabled": [k for k, f in self.factors.items() if not f.enabled],
-                "shocks": len(self.shocks)}
+                "shocks": len(self.shocks),
+                "voice": self.voice,
+                "counterparties_seed": self.counterparties.seed,
+                "inbound_rate": self.counterparties.inbound_rate,
+                "churn_rate": self.counterparties.churn_rate}

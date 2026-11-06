@@ -1,13 +1,17 @@
-# Environment: Barrel v2. Ten Apps over one shared World (barrel_sim/). The office App
+# Environment: Barrel v3. Thirteen Apps over one shared World (barrel_sim/). The office App
 # must stay first: it builds the World that the others attach to. See README.md and
 # docs/DESIGN.md.
 name: barrel
-version: 0.2.0
+version: 0.3.0
 description: Start up and run a craft whiskey distillery for ~7 years under seeded, configurable market and operating randomness.
 overview: >-
   Lease, build, license, hire, distill, barrel, label, bottle, sell, finance and file taxes
-  week by week through ten business Apps. Regulators, distributors, brokers, suppliers, the
-  bank and staff are behaviour models that email you. Seventeen exogenous factors (grain,
+  week by week through thirteen business Apps. Regulators, distributors, brokers, suppliers, the
+  bank and staff are procedurally generated counterparties (sampled from the world seed,
+  with hidden economic types). An environment-side LLM may negotiate for them inside
+  those bounds; otherwise a labeled rule-based fallback does. They email and call you,
+  remember how they were treated, and enter or leave the market. Seventeen exogenous
+  factors (grain,
   energy, weather, demand cycle, bulk barrel glut, rates, cooperage, glass, regulator
   delays/shutdowns, tariffs, distributor consolidation, equipment, contamination, fire,
   celebrity brands, labor, tourism) each draw from their own seeded stream, set per Task.
@@ -33,6 +37,12 @@ apps:
     python: environment.py:People
   - name: market
     python: environment.py:Market
+  - name: contacts
+    python: environment.py:Contacts
+  - name: phone
+    python: environment.py:Phone
+  - name: contracts
+    python: environment.py:Contracts
 
 runtime:
   provider: local

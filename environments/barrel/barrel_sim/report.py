@@ -55,7 +55,8 @@ def inbox(w: World, unread_only: bool = False, limit: int = 20) -> list[dict[str
     return [{"id": e["id"], "date": e["date"], "from": e["from"], "subject": e["subject"], "status": e["status"],
              "needs_decision": e["status"] == "open",
              "reply_by": None if e["deadline_week"] is None else w.date(e["deadline_week"]).isoformat(),
-             "read": e["read"]} for e in rows]
+             "read": e["read"],
+             "operator": (e.get("operator") or {}).get("label")} for e in rows]
 
 
 def read_email(w: World, email_id: str) -> dict[str, Any]:
@@ -63,11 +64,17 @@ def read_email(w: World, email_id: str) -> dict[str, Any]:
     if e is None:
         raise ValueError(f"No email {email_id}.")
     e["read"] = True
-    return {k: e[k] for k in ("id", "date", "from", "subject", "body", "status")} | {
+    out = {k: e[k] for k in ("id", "date", "from", "subject", "body", "status")} | {
         "reply_by": None if e["deadline_week"] is None else w.date(e["deadline_week"]).isoformat(),
+        "operator": e.get("operator") or {"kind": "rule", "label": "rule-based fallback"},
         "decisions": {"distributor_proposal": ["accept", "decline"], "purchase_order": ["accept", "decline"],
                       "bulk_bid": ["accept", "decline", "counter"],
-                      "sourced_offer": ["accept", "decline", "inspect"]}.get(e["kind"], [])}
+                      "sourced_offer": ["accept", "decline", "inspect"],
+                      "grain_contract": ["accept", "decline"],
+                      "retailer_request": ["accept", "decline"],
+                      "press_request": ["accept", "decline"],
+                      "contract_distill": ["accept", "decline"]}.get(e["kind"], [])}
+    return out
 
 
 def compliance(w: World) -> dict[str, Any]:
@@ -114,9 +121,25 @@ def production(w: World) -> dict[str, Any]:
             "finished_goods": {k: v["bottles"] for k, v in w.fg.items()}}
 
 
-def catalog() -> dict[str, Any]:
-    return {"sites": K.SITES, "equipment": K.EQUIPMENT, "roles_market_salary": K.ROLES,
-            "insurance": K.INSURANCE, "spirit_classes": K.CLASSES}
+def catalog(w: World | None = None) -> dict[str, Any]:
+    sites = {sid: dict(row) for sid, row in K.SITES.items()}
+    if w is not None:
+        for sid, lid in getattr(w, "site_landlords", {}).items():
+            p = w.parties.get(lid)
+            if p and sid in sites:
+                sites[sid]["landlord"] = p["name"]
+                sites[sid]["landlord_id"] = lid
+                sites[sid]["landlord_contact"] = p.get("contact")
+    banks = insurers = []
+    if w is not None:
+        banks = [{"id": p["id"], "name": p["name"], "contact": p.get("contact"), "kind": p["kind"]}
+                 for p in w.parties.values() if p["kind"] in ("bank", "lender") and w._in_market(p)]
+        insurers = [{"id": p["id"], "name": p["name"], "contact": p.get("contact")}
+                    for p in w.parties.values() if p["kind"] == "insurer" and w._in_market(p)]
+    return {"sites": sites, "equipment": K.EQUIPMENT, "roles_market_salary": K.ROLES,
+            "insurance": K.INSURANCE, "spirit_classes": K.CLASSES,
+            "home_state": getattr(w, "home_state", None),
+            "lenders": banks, "insurers": insurers}
 
 
 def warehouse(w: World) -> dict[str, Any]:
@@ -174,7 +197,12 @@ def finance(w: World) -> dict[str, Any]:
             "monthly_fixed_costs_est": _money(
                 (K.SITES[w.site]["rent_month"] if w.site else 0) + 4.33 * (K.G_AND_A_WEEK + w.marketing_week) +
                 sum(s["salary"] for s in w.staff.values()) / 12 * K.PAYROLL_BURDEN),
-            "revenue_last_52w": _money(sum(v for (t, _c, v) in w.revenue_log if t > w.t - 52))}
+            "revenue_last_52w": _money(sum(v for (t, _c, v) in w.revenue_log if t > w.t - 52)),
+            "claims": list(getattr(w, "claims", []) or []),
+            "counterparty_llm_cost_usd": _money(
+                (getattr(getattr(w, "voice", None), "cost_usd", 0) or 0)
+                + (getattr(getattr(w, "negotiator", None), "cost_usd", 0) or 0)),
+            "counterparty_mode": getattr(getattr(w, "negotiator", None), "mode", None)}
 
 
 def people(w: World) -> dict[str, Any]:

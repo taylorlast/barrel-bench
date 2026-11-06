@@ -14,19 +14,17 @@ import random
 from typing import Any
 
 from . import params as K
+from . import parties
+from .errors import Refused, money as _r
 from .exogenous import Paths, generate
+from .parties import apply_constraints
+from .relations import RelationsMixin
+from .negotiate import Bounds, Negotiator, operator_tag
 from .scenario import Scenario
+from .voice import Voice
 
 
-class Refused(ValueError):
-    """An action the world refuses (shown to the Agent as feedback)."""
-
-
-def _r(x: float, n: int = 2) -> float:
-    return round(float(x), n)
-
-
-class World:
+class World(RelationsMixin):
     def __init__(self, scenario: Scenario):
         self.sc = scenario
         self.P: Paths = generate(scenario)
@@ -57,8 +55,15 @@ class World:
         self.tasting_room_open = False
         self.marketing_week = 0.0
         self.awareness = 0.02
-        self.distributors: dict[str, dict[str, Any]] = {k: {**v, "status": "none", "inventory": {}, "goodwill": 1.0,
-                                                           "listed": []} for k, v in K.DISTRIBUTORS.items()}
+        market = parties.populate(scenario)
+        self.parties = market.parties
+        self.roles = market.roles
+        self.home_state = market.home_state
+        self.site_landlords = market.site_landlords
+        self.distributors: dict[str, dict[str, Any]] = {
+            pid: p for pid, p in self.parties.items()
+            if p["kind"] in ("distributor", "control", "export") and int(p.get("enter_week", 0) or 0) <= 0
+        }
         self.pos: dict[str, dict[str, Any]] = {}
         self.bulk_listings: dict[str, dict[str, Any]] = {}
         self.offers: dict[str, dict[str, Any]] = {}
@@ -91,6 +96,13 @@ class World:
         self._bond_warned = False
         self.distill_week = {"whiskey_pg": 0.0, "neutral_pg": 0.0}
         self.bottled_week = 0
+        self.voice = Voice.from_scenario(scenario)
+        self.negotiator = Negotiator.from_scenario(scenario)
+        self.calls: list[dict[str, Any]] = []
+        self.contracts: dict[str, dict[str, Any]] = {}
+        self.pending_replies: list[dict[str, Any]] = []
+        self.claims: list[dict[str, Any]] = []
+        self.contract_jobs: list[dict[str, Any]] = []
         self._welcome()
 
     # ------------------------------------------------------------------ helpers
@@ -128,26 +140,60 @@ class World:
             self.penalties_total += penalty
 
     def email(self, sender: str, subject: str, body: str, kind: str = "info", payload: dict | None = None,
-              deadline: int | None = None) -> str:
+              deadline: int | None = None, party_id: str | None = None,
+              operator: dict | None = None, phrase: bool = True) -> str:
         eid = self._id("E")
-        if self.sc.voice == "llm" and kind != "system":
-            from .voice import rewrite
-            body = rewrite(sender, subject, body)
-        self.emails.append({"id": eid, "week": self.t, "date": self.date().isoformat(), "from": sender,
-                            "subject": subject, "body": body, "kind": kind, "payload": payload or {},
-                            "status": "open" if kind not in ("info", "system") else "info",
-                            "deadline_week": deadline, "read": False})
+        party = self.parties.get(party_id) if party_id else None
+        if party is not None:
+            sender = parties.display_from(party)
+        if phrase and kind != "system":
+            body = self.voice.phrase(sender, subject, body, party=party, week=self.t, kind=kind,
+                                     history=(party or {}).get("memory") or [])
+        if operator is None and kind != "system":
+            operator = self.negotiator.default_operator(party)
+        if operator:
+            tag = operator_tag(operator)
+            if tag not in body:
+                body = body.rstrip() + "\n\n—\n" + tag
+        rec = {"id": eid, "week": self.t, "date": self.date().isoformat(), "from": sender,
+               "subject": subject, "body": body, "kind": kind, "payload": payload or {},
+               "status": "open" if kind not in ("info", "system") else "info",
+               "deadline_week": deadline, "read": False, "party_id": party_id}
+        if operator:
+            rec["operator"] = dict(operator)
+        self.emails.append(rec)
+        if party_id:
+            self.remember(party_id, kind, subject, 0.0)
         return eid
 
+    def _negotiate(self, party: dict | None, intent: str, situation: dict, bounds: Bounds,
+                   rule: dict) -> Any:
+        return self.negotiator.decide(
+            party=party or {}, intent=intent, situation=situation, bounds=bounds,
+            rule=rule, week=self.t,
+        )
+
+    def _send_negotiated(self, result, sender: str, kind: str = "info", payload: dict | None = None,
+                         deadline: int | None = None, party_id: str | None = None) -> str:
+        return self.email(sender, result.subject, result.message, kind, payload, deadline,
+                          party_id=party_id, operator=result.operator, phrase=False)
+
     def _welcome(self) -> None:
-        self.email("Board of Directors", "Welcome, founder",
+        board, sba = self._role("board"), self._role("sba")
+        self.email(parties.display_from(board), "Welcome, founder",
                    f"You have ${self.sc.seed_capital:,.0f} of seed equity in the operating account. The board expects "
-                   f"you to build a lasting whiskey company over the next {self.H / 52:.0f} years: get licensed, build "
-                   "out, make spirit, and keep the company solvent until aged whiskey carries it. We judge the outcome "
-                   "on enterprise value at the end, and on clean compliance. Report surprises early.")
-        self.email("First Commonwealth Bank (SBA desk)", "SBA 7(a) for your distillery",
+                   f"you to build a lasting whiskey company over the next {self.H / 52:.0f} years in {self.home_state}: "
+                   "get licensed, build out, make spirit, and keep the company solvent until aged whiskey carries it. "
+                   "We judge the outcome on enterprise value at the end, and on clean compliance. Report surprises "
+                   f"early. Your relationship officer at the bank is {sba['contact']} ({sba['id']}). "
+                   "The trade directory is in the contacts app — nobody there is a scripted extra; they have their "
+                   "own memory and will write to you first sometimes.",
+                   party_id=board["id"])
+        self.email(parties.display_from(sba), "SBA 7(a) for your distillery",
                    "Happy to look at an SBA 7(a) application (up to $5M, prime + 2.75%, 10-year amortization) once "
-                   "you have a signed lease and equipment on order. Typical decision time is 6-12 weeks.")
+                   "you have a signed lease and equipment on order. Typical decision time is 6-12 weeks. "
+                   f"Ask for {sba['contact']}; our id is {sba['id']}.",
+                   party_id=sba["id"])
 
     # ------------------------------------------------------------------ derived
     @property
@@ -267,12 +313,6 @@ class World:
         if handler is None:
             raise Refused(f"No decision applies to a {kind} email.")
         return handler(e, decision, price)
-
-    def send_email(self, to: str, subject: str, body: str) -> str:
-        self._need_open()
-        self._rec("send_email", to=to, subject=subject, body=body)
-        self.email(str(to)[:80], f"Re: {str(subject)[:80]}", "Thanks for the note; we'll keep it in mind.", "info")
-        return "Sent."
 
     # ------------------------------------------------------------------ compliance
     def apply_permit(self, kind: str) -> str:
@@ -397,9 +437,10 @@ class World:
             self.penalties_due += under
         elif under > 1.0:
             self.penalties_due += under
-            self.email("TTB National Revenue Center", f"Notice of tax due: {period}",
+            self.email(self._role_name("ttb"), f"Notice of tax due: {period}",
                        f"Our review of your {period} return shows ${under:,.2f} additional tax due. It has been "
-                       "added to your balance.")
+                       "added to your balance.",
+                       party_id=self.roles.get("ttb"))
         return f"Return for {period} filed; ${tax_amount:,.2f} paid."
 
     def file_operations_report(self, month: str) -> str:
@@ -434,7 +475,16 @@ class World:
         self.site = site_id
         self.buildout_done_week = self.t + s["buildout_weeks"]
         self._buildout_balance = s["buildout_cost"] * 0.6
-        return (f"Lease signed for {site_id}. Build-out ~{s['buildout_weeks']} weeks; 40% paid now, 60% on completion.")
+        lid = self.site_landlords[site_id]
+        landlord = self.parties[lid]
+        self._add_contract("lease", lid, {"site": site_id, "rent_month": s["rent_month"],
+                                          "term_weeks": self.H, "rick_capacity": s["rick_capacity"]})
+        self.email(parties.display_from(landlord), f"Lease executed: {site_id}",
+                   f"Welcome to the {site_id.replace('_', ' ')}. Base rent is ${s['rent_month']:,}/month. "
+                   f"{landlord['contact']} will be your property contact (id {lid}).",
+                   party_id=lid)
+        return (f"Lease signed for {site_id} with {landlord['name']}. Build-out ~{s['buildout_weeks']} weeks; "
+                "40% paid now, 60% on completion.")
 
     def order_equipment(self, package_id: str) -> str:
         self._need_open()
@@ -449,6 +499,14 @@ class World:
         self.equipment = package_id
         lead = e["lead_weeks"] + (4 if self.P.cooperage_lead[self.t] > 14 else 0)
         self.equipment_ready_week = self.t + lead + 2
+        fab = self.parties.get(self.roles.get("fabricator"))
+        if fab:
+            self._add_contract("equipment", fab["id"], {"package": package_id, "cost": e["cost"],
+                                                        "ready_week": self.equipment_ready_week})
+            self.email(parties.display_from(fab), f"Order acknowledged: {package_id}",
+                       f"We have your deposit on the {package_id}. Fabrication and install run about "
+                       f"{lead + 2} weeks; {fab['contact']} is on the job.",
+                       party_id=fab["id"])
         return f"{package_id} ordered; 50% deposit paid. Fabrication + install ~{lead + 2} weeks."
 
     def _room(self, whiskey: bool) -> float:
@@ -705,18 +763,22 @@ class World:
     # ------------------------------------------------------------------ procurement
     def quotes(self) -> dict[str, Any]:
         t = self.t
-        return {"grain_bu": {"price": _r(self.P.corn[t] * 1.25), "lead_weeks": 1,
-                             "note": "bourbon mash bill blend, per bushel (min 100)"},
-                "ngs_pg": {"price": _r(K.NGS_PER_PG * (0.85 + 0.15 * self.P.corn[t] / 4.4)), "lead_weeks": 2,
-                           "note": "190-proof grain neutral spirits, per PG (min 500)"},
-                "new_barrels": {"price": _r(K.BARREL_BASE_PRICE * self.P.cooperage_index[t], 0),
-                                "lead_weeks": int(self.P.cooperage_lead[t]),
-                                "note": "53-gal new charred oak, #3 char (min 20)"},
-                "glass_bottles": {"price": _r(K.DRY_GOODS_PER_BOTTLE * self.P.glass_index[t]),
-                                  "lead_weeks": int(self.P.glass_lead[t]),
-                                  "note": "750ml glass + closure + label + case share (min 1,200)"}}
+        out = {"grain_bu": {"price": _r(self.P.corn[t] * 1.25), "lead_weeks": 1,
+                            "note": "bourbon mash bill blend, per bushel (min 100)"},
+               "ngs_pg": {"price": _r(K.NGS_PER_PG * (0.85 + 0.15 * self.P.corn[t] / 4.4)), "lead_weeks": 2,
+                          "note": "190-proof grain neutral spirits, per PG (min 500)"},
+               "new_barrels": {"price": _r(K.BARREL_BASE_PRICE * self.P.cooperage_index[t], 0),
+                               "lead_weeks": int(self.P.cooperage_lead[t]),
+                               "note": "53-gal new charred oak, #3 char (min 20)"},
+               "glass_bottles": {"price": _r(K.DRY_GOODS_PER_BOTTLE * self.P.glass_index[t]),
+                                 "lead_weeks": int(self.P.glass_lead[t]),
+                                 "note": "750ml glass + closure + label + case share (min 1,200)"}}
+        for item, row in out.items():
+            row["suppliers"] = self.supplier_quotes(item, row["price"], row["lead_weeks"])
+            row["supplier_name"] = "spot / posted index"
+        return out
 
-    def place_order(self, item: str, quantity: float) -> str:
+    def place_order(self, item: str, quantity: float, supplier_id: str | None = None) -> str:
         self._need_open()
         q = self.quotes()
         if item not in q:
@@ -727,14 +789,24 @@ class World:
             raise Refused(f"Minimum order for {item} is {mins[item]:,}.")
         if item in ("new_barrels", "glass_bottles"):
             qty = float(int(qty))
-        self._rec("place_order", item=item, quantity=qty)
-        cost = q[item]["price"] * qty
+        if supplier_id:
+            sup = next((s for s in q[item].get("suppliers") or [] if s["id"] == supplier_id), None)
+            if sup is None:
+                raise Refused(f"No supplier {supplier_id} quoting {item} this week.")
+            if not sup["available"]:
+                raise Refused(f"{sup['name']} is on allocation and not taking new orders.")
+            price, lead, who = sup["price"], sup["lead_weeks"], sup["name"]
+            self.remember(supplier_id, "order", f"PO {item} x {qty:.0f}", 0.02)
+        else:
+            price, lead, who, supplier_id = q[item]["price"], q[item]["lead_weeks"], "spot desk", None
+        self._rec("place_order", item=item, quantity=qty, supplier_id=supplier_id)
+        cost = price * qty
         self._spend(cost, f"PO {item}")
         oid = self._id("PO-")
-        due = self.t + q[item]["lead_weeks"]
+        due = self.t + lead
         self.orders.append({"id": oid, "item": item, "qty": qty, "cost": cost, "placed": self.t,
-                            "due": due, "status": "open"})
-        return f"{oid}: {qty:,.0f} {item} for ${cost:,.0f} (paid), due week {due}."
+                            "due": due, "status": "open", "supplier_id": supplier_id, "supplier": who})
+        return f"{oid}: {qty:,.0f} {item} from {who} for ${cost:,.0f} (paid), due week {due}."
 
     # ------------------------------------------------------------------ sales
     def set_price(self, label_id: str, channel: str, price: float) -> str:
@@ -768,9 +840,11 @@ class World:
     def pitch_distributor(self, distributor_id: str, label_ids: str) -> str:
         self._need_open()
         d = self.distributors.get(distributor_id)
-        if d is None or d["kind"] == "control":
-            raise Refused("distributor_id must be a distributor or importer (control boards use apply_control_listing): "
-                          + ", ".join(k for k, v in self.distributors.items() if v["kind"] != "control"))
+        if d is None or d["kind"] == "control" or not self._in_market(d):
+            raise Refused("distributor_id must be a distributor or importer currently in the market "
+                          "(control boards use apply_control_listing): "
+                          + ", ".join(k for k, v in self.distributors.items()
+                                      if v["kind"] != "control" and self._in_market(v)))
         if d["status"] in ("pitched", "offered") or d.get("addon"):
             raise Refused(f"{distributor_id} already has a pitch under review.")
         if d["status"] in ("declined", "dropped") and self.t < d.get("retry_week", 0):
@@ -798,9 +872,10 @@ class World:
     def apply_control_listing(self, board_id: str, label_id: str) -> str:
         self._need_open()
         d = self.distributors.get(board_id)
-        if d is None or d["kind"] != "control":
-            raise Refused("board_id must be a control-state board: " +
-                          ", ".join(k for k, v in self.distributors.items() if v["kind"] == "control"))
+        if d is None or d["kind"] != "control" or not self._in_market(d):
+            raise Refused("board_id must be a control-state board in the market: " +
+                          ", ".join(k for k, v in self.distributors.items()
+                                    if v["kind"] == "control" and self._in_market(v)))
         if self.labels.get(label_id, {}).get("status") != "approved":
             raise Refused("Only approved labels can be submitted for listing.")
         if not self.permitted:
@@ -887,6 +962,13 @@ class World:
         if prem:
             self._spend(prem, f"Insurance premium ({policy})")
             self.insurance_paid_until = self.t + 52
+        if "insurer" in self.roles:
+            self._add_contract("insurance", self.roles["insurer"],
+                               {"policy": policy, "premium": prem, "term_weeks": 52})
+            self.email(self._role_name("insurer"), f"{policy} policy bound",
+                       f"Your {policy} policy is bound for 12 months (${prem:,}). "
+                       f"{self._role('insurer')['contact']} is your adjuster contact.",
+                       party_id=self.roles["insurer"])
         return f"{policy} policy bound for 12 months (${prem:,})."
 
     # ------------------------------------------------------------------ people
@@ -933,6 +1015,8 @@ class World:
         for o in self.orders:
             if o["status"] == "open" and o["due"] <= t:
                 o["status"] = "delivered"
+                if o.get("pay_on_delivery"):
+                    self._spend(o["cost"], f"Contract delivery {o['item']}")
                 self.inventory[o["item"]] += o["qty"]
                 self.inv_cost[o["item"]] += o["cost"]
                 self._event(f"Delivered {o['id']}: {o['qty']:,.0f} {o['item']}")
@@ -946,6 +1030,10 @@ class World:
         self._hazards(t)
         self._sales_week(t)
         self._counterparties(t)
+        self._inbound_week(t)
+        self._churn_week(t)
+        self._deliver_pending_replies(t)
+        self._tick_contract_jobs(t)
         self._costs(t)
         if self.date(t).month != self.date(t + 1).month:
             self._month_close()
@@ -968,7 +1056,8 @@ class World:
         for kind, p in self.permits.items():
             if p["status"] != "pending":
                 continue
-            who = "TTB National Revenue Center" if kind == "federal_dsp" else "State ABC Licensing"
+            who_id = self.roles["ttb"] if kind == "federal_dsp" else self.roles["abc"]
+            who = parties.display_from(self.parties[who_id])
             if p["question_planned"] and not p.get("asked") and p["progress"] >= 0.4 * p["work_weeks"]:
                 p["asked"] = True
                 p["question_open"] = True
@@ -976,26 +1065,29 @@ class World:
                 self.email(who, f"Information request on your {kind} application",
                            "Please clarify your premises diagram (bonded area boundaries) and the source of your "
                            "funds. Reply to this email within 30 days or the application will be abandoned.",
-                           "ttb_question", {"permit": kind}, deadline=t + 4)
+                           "ttb_question", {"permit": kind}, deadline=t + 4, party_id=who_id)
             if p.get("question_open"):
                 if t > p["question_deadline"]:
                     p["status"] = "abandoned"
                     self.email(who, f"{kind} application abandoned",
-                               "We did not receive your response, so the application is abandoned. You may re-apply.")
+                               "We did not receive your response, so the application is abandoned. You may re-apply.",
+                               party_id=who_id)
                 continue
             if not shut:
                 p["progress"] += 1
             if p["progress"] >= p["work_weeks"]:
                 p["status"] = "approved"
                 p["approved_week"] = t
-                self.email(who, f"{kind} approved", f"Your {kind} is approved effective {self.date(t).isoformat()}.")
+                self.email(who, f"{kind} approved", f"Your {kind} is approved effective {self.date(t).isoformat()}.",
+                           party_id=who_id)
         for lab in self.labels.values():
             if lab["status"] == "pending" and not shut:
                 lab["progress"] += 1
                 if lab["progress"] >= lab["work_weeks"]:
                     lab["status"] = "rejected" if lab["reject"] else "approved"
-                    self.email("TTB COLAs Online", f"Label {lab['id']} {lab['status']}",
-                               f"{lab['brand']} ({lab['class']}): {lab['status']}. {lab['reject']}".strip())
+                    self.email(parties.display_from(self._role("ttb_labels")), f"Label {lab['id']} {lab['status']}",
+                               f"{lab['brand']} ({lab['class']}): {lab['status']}. {lab['reject']}".strip(),
+                               party_id=self.roles["ttb_labels"])
         if shut and not self.P.shutdown[max(0, t - 1)] or (t == 0 and shut):
             self._event("Federal government shutdown: TTB permit and label processing has stopped")
 
@@ -1040,9 +1132,13 @@ class World:
             self._bi_amount = pol["bi_weekly"]
             self._event(f"Rickhouse fire destroyed ~{int(share * 100)}% of barrels (${lost:,.0f}); insurance paid "
                         f"${claim:,.0f}")
-            self.email("Fire Marshal / Insurer", "Rickhouse fire",
+            insurer = self.parties.get(self.roles.get("insurer"))
+            self.claims.append({"week": t, "kind": "fire", "loss": lost, "paid": claim,
+                                "policy": self.insurance, "party_id": insurer["id"] if insurer else None})
+            self.email(parties.display_from(insurer) if insurer else "Insurer", "Rickhouse fire",
                        f"A fire destroyed about {int(share * 100)}% of the barrels on hand, worth ${lost:,.0f} at "
-                       f"market. Your {self.insurance} coverage pays ${claim:,.0f}.")
+                       f"market. Your {self.insurance} coverage pays ${claim:,.0f}.",
+                       party_id=insurer["id"] if insurer else None)
         if self._bi_weeks_left:
             self.cash += getattr(self, "_bi_amount", 0)
             self._bi_weeks_left -= 1
@@ -1061,16 +1157,18 @@ class World:
         if ytd > K.BOND_THRESHOLD and not self.bond and not self._bond_warned:
             self._bond_warned = True
             self.violate("no_bond", "Excise liability passed $50,000 without a DSP bond", False, 5_000)
-            self.email("TTB National Revenue Center", "Bond required",
-                       "Your excise liability this year exceeds $50,000 and you have no bond on file. Obtain one now.")
+            self.email(self._role_name("ttb"), "Bond required",
+                       "Your excise liability this year exceeds $50,000 and you have no bond on file. Obtain one now.",
+                       party_id=self.roles["ttb"])
         if self.permitted and P.inspection_u[t] < 0.006:
             late = sum(1 for v in self.violations if v["type"].startswith(("late", "unfiled")))
             fine = 2_500 * late
             if fine:
                 self.violate("inspection_finding", f"Field inspection found {late} late filings", False, fine)
-            self.email("TTB Field Operations", "Field inspection completed",
+            self.email(self._role_name("ttb_field"), "Field inspection completed",
                        f"Inspection of records and bonded premises complete. Late filings found: {late}. "
-                       + (f"Penalty assessed: ${fine:,}." if fine else "No action."))
+                       + (f"Penalty assessed: ${fine:,}." if fine else "No action."),
+                       party_id=self.roles["ttb_field"])
 
     # ------------------------------------------------------------------ sales
     def _remove(self, label_id: str, bottles: int, channel: str, net_revenue: float) -> None:
@@ -1181,29 +1279,77 @@ class World:
                          + 0.05 * min(3, len(labs)) + 0.12 * (P.demand[t] - 1) + r.gauss(0, 0.06))
                 if d["kind"] == "export":
                     score -= 0.8 * P.export_tariff[t]
-                if score >= d["threshold"]:
+                score = apply_constraints(
+                    score, d, labels=[self.labels[l] for l in labs], awareness=self.awareness,
+                    rel_price=sum(rel) / len(rel),
+                    bottles_on_hand=sum(self.fg.get(l, {}).get("bottles", 0) for l in labs),
+                    already_has_home=any(x.get("status") == "signed" and x.get("territory") == self.home_state
+                                         for x in self.distributors.values() if x is not d),
+                )
+                classes = {self.labels.get(l, {}).get("class") for l in labs}
+                unaged_only = classes <= {"vodka", "gin", "white_whiskey"} and bool(classes)
+                hard_no_unaged = "no_unaged" in set(d.get("hidden_constraints") or []) and unaged_only
+                margin = float(d["margin"])
+                m_lo, m_hi = max(0.10, margin - 0.05), min(0.45, margin + 0.04)
+                if hard_no_unaged or score < d["threshold"] - 0.15:
+                    allowed, rule_dec = ["decline"], "decline"
+                elif score >= d["threshold"]:
+                    allowed, rule_dec = ["accept", "counter", "decline"], "accept"
+                else:
+                    allowed, rule_dec = ["counter", "decline"], "decline"
+                accept_body = (
+                    f"We'd like to carry {', '.join(labs)}. We buy at your wholesale price less a "
+                    f"{int(margin * 100)}% program allowance on features, 60-day review. "
+                    "Reply accept or decline within 4 weeks."
+                )
+                decline_body = (
+                    "Thanks for the samples. We'll pass for now; the category is crowded and we need to "
+                    "see more pull in-market. Try us again in six months."
+                )
+                result = self._negotiate(d, "pitch_response", {
+                    "labels": labs, "awareness_band": round(self.awareness, 3),
+                    "relative_wholesale": round(sum(rel) / len(rel), 3) if rel else 1.0,
+                }, Bounds(
+                    allowed_decisions=allowed,
+                    terms={"margin": (m_lo, m_hi)} if "decline" != allowed[0] or len(allowed) > 1 else {},
+                    forced_decision="decline" if hard_no_unaged else None,
+                    reason=("You will not carry unaged spirit." if hard_no_unaged else None),
+                ), {
+                    "decision": rule_dec,
+                    "terms": {"margin": margin} if rule_dec != "decline" else {},
+                    "subject": "Distribution proposal" if rule_dec != "decline" else "Re: your brand",
+                    "message": accept_body if rule_dec != "decline" else decline_body,
+                })
+                if result.decision in ("accept", "counter"):
                     d["status"] = "offered"
-                    self.email(d["name"], "Distribution proposal",
-                               f"We'd like to carry {', '.join(labs)}. We buy at your wholesale price less a "
-                               f"{int(d['margin'] * 100)}% program allowance on features, 60-day review. "
-                               "Reply accept or decline within 4 weeks.", "distributor_proposal",
-                               {"dist": did, "labels": labs}, deadline=t + 4)
+                    if "margin" in result.terms:
+                        d["margin"] = float(result.terms["margin"])
+                    self._send_negotiated(result, d["name"], "distributor_proposal",
+                                          {"dist": did, "labels": labs, "margin": d["margin"]},
+                                          deadline=t + 4, party_id=did)
                 else:
                     d["status"] = "declined"
                     d["retry_week"] = t + 26
-                    self.email(d["name"], "Re: your brand",
-                               "Thanks for the samples. We'll pass for now; the category is crowded and we need to "
-                               "see more pull in-market. Try us again in six months.")
+                    self._send_negotiated(result, d["name"], party_id=did)
             if d.get("addon") and d["addon"]["decide"] <= t:
                 add = d.pop("addon")["labels"]
                 r = self.rng(f"addon|{did}|{t}")
                 qs = [self.fg.get(l, {}).get("q", 50) for l in add]
-                if 0.35 + 0.3 * d["goodwill"] + 0.005 * (sum(qs) / len(qs) - 55) + r.gauss(0, 0.08) >= d["threshold"]:
+                addon_score = (0.35 + 0.3 * d["goodwill"] + 0.005 * (sum(qs) / len(qs) - 55)
+                               + r.gauss(0, 0.08))
+                ok = addon_score >= d["threshold"]
+                result = self._negotiate(d, "line_extension", {"labels": add}, Bounds(
+                    allowed_decisions=["accept", "decline"] if ok else ["decline"],
+                ), {
+                    "decision": "accept" if ok else "decline",
+                    "terms": {},
+                    "subject": "Line extension accepted" if ok else "Line extension declined",
+                    "message": (f"We'll add {', '.join(add)} to the book." if ok
+                                else "We'll pass on adding SKUs until your current items move faster."),
+                })
+                if result.decision == "accept":
                     d["listed"].extend(add)
-                    self.email(d["name"], "Line extension accepted", f"We'll add {', '.join(add)} to the book.")
-                else:
-                    self.email(d["name"], "Line extension declined",
-                               "We'll pass on adding SKUs until your current items move faster.")
+                self._send_negotiated(result, d["name"], party_id=did)
             if d["kind"] == "control" and d.get("apps") and self.date(t).month in (2, 5, 8, 11) and first_week_of_month:
                 for app in list(d["apps"]):
                     if app["week"] > t - 4:
@@ -1211,14 +1357,23 @@ class World:
                     d["apps"].remove(app)
                     q = self.fg.get(app["label"], {}).get("q", 50)
                     r = self.rng(f"listing|{did}|{app['label']}|{t}")
-                    if 0.3 + 0.5 * self.awareness + 0.005 * (q - 55) + r.gauss(0, 0.08) >= d["threshold"]:
+                    listing_score = 0.3 + 0.5 * self.awareness + 0.005 * (q - 55) + r.gauss(0, 0.08)
+                    ok = listing_score >= d["threshold"]
+                    result = self._negotiate(d, "listing_decision", {"label": app["label"]}, Bounds(
+                        allowed_decisions=["accept", "decline"] if ok else ["decline"],
+                    ), {
+                        "decision": "accept" if ok else "decline",
+                        "terms": {},
+                        "subject": (f"Listing approved: {app['label']}" if ok
+                                    else f"Listing declined: {app['label']}"),
+                        "message": ("Your product is listed. The board will send purchase orders monthly."
+                                    if ok else
+                                    "Not selected this cycle. You may resubmit in the next window."),
+                    })
+                    if result.decision == "accept":
                         d["listed"].append(app["label"])
                         d["status"] = "signed"
-                        self.email(d["name"], f"Listing approved: {app['label']}",
-                                   "Your product is listed. The board will send purchase orders monthly.")
-                    else:
-                        self.email(d["name"], f"Listing declined: {app['label']}",
-                                   "Not selected this cycle. You may resubmit in the next window.")
+                    self._send_negotiated(result, d["name"], party_id=did)
         if first_week_of_month:
             for did, d in self.distributors.items():
                 if d["status"] != "signed":
@@ -1242,7 +1397,7 @@ class World:
                     self.email(d["name"], f"Purchase order {pid}",
                                f"PO {pid}: {cases} cases (6x750ml) of {lid} at ${price:.2f}/bottle, ship by "
                                f"{self.date(t + 3).isoformat()}. Reply accept or decline within 2 weeks.",
-                               "purchase_order", {"po": pid}, deadline=t + 2)
+                               "purchase_order", {"po": pid}, deadline=t + 2, party_id=did)
         if t in P.consolidation_weeks:
             signed = [k for k, v in self.distributors.items() if v["status"] == "signed" and v["kind"] == "distributor"]
             if signed:
@@ -1255,7 +1410,8 @@ class World:
                     d["retry_week"] = t + 52
                     self.email(d["name"], "Portfolio rationalization",
                                "Following our merger we are cutting our craft portfolio. Your brand is discontinued "
-                               "effective immediately; remaining stock will be closed out.")
+                               "effective immediately; remaining stock will be closed out.",
+                               party_id=did)
                     self._event(f"{d['name']} dropped the brand after a wholesaler merger")
         for b in self.bulk_listings.values():
             if b["status"] != "open" or b.get("bid_sent") or t < b["week"] + 2:
@@ -1268,29 +1424,83 @@ class World:
             claimed = dict(lot)
             claimed["age_at_entry"] = max(lot["age_at_entry"], b["stated_age"] - max(0, t - lot["fill_week"]) / 52)
             fv = self.barrel_fair_value(claimed, t)
-            bid = fv * (0.82 + 0.2 * r.random())
-            if b["ask"] <= bid:
-                bid = b["ask"]
+            # Consume the same draws the rule-based path always used.
+            default_bid = fv * (0.82 + 0.2 * r.random())
+            brokers = [x for x in self.parties.values() if x["kind"] == "broker" and self._in_market(x, t)]
+            broker = brokers[hash(b["id"]) % len(brokers)] if brokers else None
+            if broker:
+                res = float(broker.get("reservation_mult", 0.88))
+                default_bid = fv * (res + 0.14 * r.random())
+                lo, hi = fv * res, fv * (res + 0.14)
+            else:
+                res = 0.82
+                lo, hi = fv * 0.82, fv * 1.02
+            ask = float(b["ask"])
+            if ask < lo:
+                lo = hi = ask
+            else:
+                hi = min(hi, ask)
+            if ask <= default_bid:
+                default_bid = ask
+            default_bid = min(hi, max(lo, default_bid))
+            party = broker or {"kind": "broker", "name": "A barrel broker", "contact": "a broker"}
+            result = self._negotiate(party, "bulk_bid", {
+                "listing": b["id"], "barrels": b["barrels"], "ask": ask,
+                "stated_age": b["stated_age"],
+            }, Bounds(allowed_decisions=["offer", "pass"], terms={"bid": (lo, hi)}), {
+                "decision": "offer",
+                "terms": {"bid": default_bid},
+                "subject": f"Bid on listing {b['id']}",
+                "message": (
+                    f"Our buyer's samples came back fine. Bid ${default_bid:,.0f}/barrel for "
+                    f"{b['barrels']} barrels (you asked ${ask:,.0f}). Reply accept, decline, or "
+                    "counter with a price; open 2 weeks."
+                ),
+            })
             b["bid_sent"] = True
+            b["broker_id"] = broker["id"] if broker else None
+            if result.decision == "pass":
+                b["status"] = "closed"
+                continue
+            bid = float(result.terms.get("bid", default_bid))
+            bid = min(ask, max(lo, bid))
             b["bid"] = bid
-            self.email("Barrel Brokers LLC", f"Bid on listing {b['id']}",
-                       f"Our buyer's samples came back fine. Bid ${bid:,.0f}/barrel for {b['barrels']} barrels "
-                       f"(you asked ${b['ask']:,.0f}). Reply accept, decline, or counter with a price; open 2 weeks.",
-                       "bulk_bid", {"listing": b["id"]}, deadline=t + 2)
+            sender = parties.display_from(broker) if broker else "A barrel broker"
+            self._send_negotiated(result, sender, "bulk_bid", {"listing": b["id"]},
+                                  deadline=t + 2, party_id=broker["id"] if broker else None)
         if t % 13 == 6:
             r = self.rng(f"sourced|{t}")
             age = 2 + int(r.random() * 4)
             n = 10 + int(r.random() * 40)
             fake = r.random() < 0.2
             px = P.bulk_new_fill[t] * (1 + 0.55 * age) * (0.95 + 0.15 * r.random())
-            oid = self._id("SRC-")
-            self.offers[oid] = {"age_claim": age, "true_age": age - (1.0 if fake else 0.0), "barrels": n, "price": px,
-                                "q": 55 + r.gauss(0, 6), "week": t}
-            seller = "Heartland Cask Exchange" if fake else "Lawrenceburg Bulk Spirits"
-            self.email(seller, f"Bulk bourbon: {n} bbl, {age} years",
-                       f"{n} barrels of {age}-year bourbon (distilled in Indiana), ${px:,.0f}/barrel, delivered in "
-                       "3 weeks. Reply accept, decline, or inspect ($1,500 paperwork audit + sample). Open 3 weeks.",
-                       "sourced_offer", {"offer": oid}, deadline=t + 3)
+            q_draw = 55 + r.gauss(0, 6)
+            seller = parties.spawn(self.sc, "broker", t, self.parties, {
+                "specialty": "aged whiskey seller",
+                "territory": "Indiana",
+            })
+            self.parties[seller["id"]] = seller
+            lo, hi = px * 0.92, px * 1.08
+            result = self._negotiate(seller, "sourced_offer", {
+                "barrels": n, "age_claim": age, "origin": "Indiana",
+            }, Bounds(allowed_decisions=["offer", "pass"], terms={"price": (lo, hi)}), {
+                "decision": "offer",
+                "terms": {"price": px},
+                "subject": f"Bulk bourbon: {n} bbl, {age} years",
+                "message": (
+                    f"{n} barrels of {age}-year bourbon (distilled in Indiana), ${px:,.0f}/barrel, "
+                    "delivered in 3 weeks. Reply accept, decline, or inspect ($1,500 paperwork "
+                    "audit + sample). Open 3 weeks."
+                ),
+            })
+            if result.decision != "pass":
+                px = float(result.terms.get("price", px))
+                px = min(hi, max(lo, px))
+                oid = self._id("SRC-")
+                self.offers[oid] = {"age_claim": age, "true_age": age - (1.0 if fake else 0.0), "barrels": n, "price": px,
+                                    "q": q_draw, "week": t, "shady": fake, "party_id": seller["id"]}
+                self._send_negotiated(result, parties.display_from(seller), "sourced_offer",
+                                      {"offer": oid}, deadline=t + 3, party_id=seller["id"])
         for jp in list(self.job_posts):
             if jp["arrive"] > t:
                 continue
@@ -1301,42 +1511,92 @@ class World:
                 skill = max(25.0, min(98.0, 62 + P.labor_pool[t] + r.gauss(0, 13)))
                 ask = K.ROLES[jp["role"]] * (0.85 + 0.35 * (skill - 40) / 60) * (0.95 + 0.1 * r.random())
                 cid = self._id("C")
-                name = r.choice(["Avery", "Jordan", "Sam", "Riley", "Casey", "Morgan", "Drew", "Quinn"]) + " " + \
-                    r.choice(["Beam", "Pepper", "Stitzel", "Crow", "Lee", "Weller", "Dant", "Ripy"])
+                name = r.choice(list(parties.FIRST)) + " " + r.choice(list(parties.LAST))
                 hint = "strong" if skill + r.gauss(0, 8) > 72 else "solid" if skill + r.gauss(0, 8) > 55 else "green"
                 years = max(1, int((skill - 30) / 6 + r.gauss(0, 2)))
                 self.candidates[cid] = {"id": cid, "name": name, "role": jp["role"], "skill": skill, "ask": ask,
                                         "status": "available", "hint": hint, "years": years, "week": t}
                 lines.append(f"{cid} {name}: {years} yrs experience, references say '{hint}', asking ${ask:,.0f}/yr")
-            self.email("Bourbon Country Staffing", f"Candidates for {jp['role']}",
-                       "\n".join(lines) + "\nHire in the people app; good candidates take other offers within ~3 weeks.")
+            rec = self.parties.get(self.roles.get("recruiter"))
+            self.email(parties.display_from(rec) if rec else "A recruiter", f"Candidates for {jp['role']}",
+                       "\n".join(lines) + "\nHire in the people app; good candidates take other offers within ~3 weeks.",
+                       party_id=rec["id"] if rec else None)
         for c in self.candidates.values():
             if c["status"] == "available" and t > c["week"] + 3:
                 c["status"] = "gone"
         for a in self.loan_apps:
             if a["status"] != "pending" or a["decide"] > t:
                 continue
-            a["status"] = "approved"
             if a["kind"] == "sba_7a":
                 hard = K.EQUIPMENT[self.equipment]["cost"] + K.SITES[self.site]["buildout_cost"]
                 cap = min(5_000_000, 600_000 + 1.6 * hard + 0.5 * self.inventory_value())
                 if self.permits.get("federal_dsp", {}).get("status") not in ("approved", "pending"):
                     cap *= 0.5
-                amt = min(a["amount"], cap)
+                rule_amt = min(a["amount"], cap)
+                floor = min(rule_amt, max(25_000.0, 0.5 * rule_amt)) if rule_amt else 0.0
+                party = self._role("sba")
+                result = self._negotiate(party, "loan_decision", {
+                    "kind": "sba_7a", "requested": a["amount"],
+                }, Bounds(
+                    allowed_decisions=["accept", "decline"],
+                    terms={"amount": (floor, cap)} if cap > 0 else {},
+                ), {
+                    "decision": "accept",
+                    "terms": {"amount": rule_amt},
+                    "subject": "SBA 7(a) approved and funded",
+                    "message": (
+                        f"Approved ${rule_amt:,.0f} (requested ${a['amount']:,.0f}) at prime + 2.75% variable "
+                        f"(prime is {P.prime[t] * 100:.2f}% today), 10-year amortization, monthly payments. "
+                        "2% guarantee fee deducted at funding."
+                    ),
+                })
+                if result.decision == "decline":
+                    a["status"] = "declined"
+                    self._send_negotiated(result, self._role_name("sba"), party_id=self.roles.get("sba"))
+                    continue
+                amt = float(result.terms.get("amount", rule_amt))
+                amt = min(cap, max(floor, amt)) if cap > 0 else 0.0
+                a["status"] = "approved"
                 self.loans["sba_7a"] = {"balance": amt, "spread": 0.0275, "amort_months": 120, "start_week": t}
                 self.cash += amt * 0.98
-                self.email("First Commonwealth Bank (SBA desk)", "SBA 7(a) approved and funded",
-                           f"Approved ${amt:,.0f} (requested ${a['amount']:,.0f}) at prime + 2.75% variable "
-                           f"(prime is {P.prime[t] * 100:.2f}% today), 10-year amortization, monthly payments. "
-                           "2% guarantee fee deducted at funding.")
+                self.loans["sba_7a"]["party_id"] = self.roles.get("sba")
+                self._add_contract("sba_7a", self.roles["sba"], {"amount": amt, "spread": 0.0275,
+                                                                "amort_months": 120})
+                self._send_negotiated(result, self._role_name("sba"), party_id=self.roles["sba"])
             else:
                 limit = 0.5 * self.inventory_value()
-                self.loans["barrel_line"] = {"balance": 0.0, "limit": min(a["amount"], limit), "cap": a["amount"],
+                rule_limit = min(a["amount"], limit)
+                party = self._role("barrel_lender")
+                result = self._negotiate(party, "loan_decision", {
+                    "kind": "barrel_line", "requested": a["amount"],
+                }, Bounds(
+                    allowed_decisions=["accept", "decline"],
+                    terms={"amount": (0.0, float(a["amount"]))},
+                ), {
+                    "decision": "accept",
+                    "terms": {"amount": float(a["amount"])},
+                    "subject": "Barrel-backed line approved",
+                    "message": (
+                        f"Revolving line up to ${a['amount']:,.0f}; availability is 50% of appraised barrel value "
+                        f"(today ${rule_limit:,.0f}) at prime + 4%. Covenant: balance <= availability "
+                        "at each month-end appraisal. Two misses in a row and we sell barrels to cure."
+                    ),
+                })
+                if result.decision == "decline":
+                    a["status"] = "declined"
+                    self._send_negotiated(result, self._role_name("barrel_lender"),
+                                          party_id=self.roles.get("barrel_lender"))
+                    continue
+                cap_amt = float(result.terms.get("amount", a["amount"]))
+                cap_amt = min(float(a["amount"]), max(0.0, cap_amt))
+                a["status"] = "approved"
+                self.loans["barrel_line"] = {"balance": 0.0, "limit": min(cap_amt, limit), "cap": cap_amt,
                                              "spread": 0.04}
-                self.email("Rickhouse Capital", "Barrel-backed line approved",
-                           f"Revolving line up to ${a['amount']:,.0f}; availability is 50% of appraised barrel value "
-                           f"(today ${min(a['amount'], limit):,.0f}) at prime + 4%. Covenant: balance <= availability "
-                           "at each month-end appraisal. Two misses in a row and we sell barrels to cure.")
+                self.loans["barrel_line"]["party_id"] = self.roles.get("barrel_lender")
+                self._add_contract("barrel_line", self.roles["barrel_lender"],
+                                   {"cap": cap_amt, "advance": 0.5, "spread": 0.04})
+                self._send_negotiated(result, self._role_name("barrel_lender"),
+                                      party_id=self.roles["barrel_lender"])
         for e in self.emails:
             if e["status"] == "open" and e["deadline_week"] is not None and t > e["deadline_week"]:
                 e["status"] = "expired"
@@ -1357,11 +1617,16 @@ class World:
             d["status"] = "signed"
             d["listed"] = list(e["payload"]["labels"])
             e["status"] = "accepted"
+            self.remember(d["id"], "signed", f"Signed distribution for {', '.join(d['listed'])}", 0.08)
+            self._add_contract("distribution", d["id"], {"labels": list(d["listed"]),
+                                                        "program_allowance": d.get("margin"),
+                                                        "review_days": 60})
             return f"Signed with {d['name']}. Expect monthly purchase orders."
         if decision != "decline":
             raise Refused("accept or decline")
         d["status"] = "none"
         e["status"] = "declined"
+        self.remember(d["id"], "declined", "Declined a distribution proposal", -0.04)
         return "Declined."
 
     def _decide_purchase_order(self, e, decision, price):
@@ -1371,11 +1636,13 @@ class World:
             po["status"] = "accepted"
             e["status"] = "accepted"
             have = self.fg.get(po["label"], {}).get("bottles", 0)
+            self.remember(d["id"], "accepted_po", f"Accepted {po['id']}", 0.02)
             return f"Accepted {po['id']}; ships from finished goods at week end ({have:,} bottles on hand)."
         if decision != "decline":
             raise Refused("accept or decline")
         po["status"] = "declined"
         e["status"] = "declined"
+        self.remember(d["id"], "declined_po", f"Declined {po['id']}", -0.05)
         d["goodwill"] = max(0.3, d["goodwill"] - 0.05)
         return "Declined the PO."
 
@@ -1396,11 +1663,31 @@ class World:
         if decision == "counter":
             if price is None:
                 raise Refused("counter needs a price")
-            if float(price) > b["bid"] * 1.08:
+            room = 1.08
+            broker = self.parties.get(b.get("broker_id"))
+            if broker is not None:
+                room = 1.0 + float(broker.get("counter_room", 0.08))
+            max_ok = b["bid"] * room
+            asked = float(price)
+            within = asked <= max_ok + 1e-9
+            party = broker or {"kind": "broker", "name": "A barrel broker"}
+            result = self._negotiate(party, "bulk_counter_response", {
+                "listing": b["id"], "their_bid": b["bid"], "your_counter": asked,
+            }, Bounds(
+                allowed_decisions=["accept", "decline"] if within else ["decline"],
+                terms={"price": (float(b["bid"]), max_ok)} if within else {},
+            ), {
+                "decision": "accept" if within else "decline",
+                "terms": {"price": asked} if within else {},
+                "subject": f"Re: Bid on listing {b['id']}",
+                "message": ("We can do that number." if within
+                            else "The broker walked away from your counter."),
+            })
+            if result.decision != "accept":
                 b["status"] = "closed"
                 e["status"] = "declined"
-                return "The broker walked away from your counter."
-            sale = float(price)
+                return result.message or "The broker walked away from your counter."
+            sale = asked
         n = b["barrels"]
         if self.true_age(lot) + 0.05 < b["stated_age"]:
             self.violate("misdescribed_barrels",
@@ -1423,9 +1710,11 @@ class World:
             self._spend(1_500, "Sourced lot inspection")
             o["inspected"] = True
             score = o["q"] + self.rng(f"insp|{oid}").gauss(0, 3)
-            self.email("Independent Lab Services", f"Inspection of {oid}",
+            lab = self.parties.get(self.roles.get("lab"))
+            self.email(parties.display_from(lab) if lab else "Independent lab", f"Inspection of {oid}",
                        f"Warehouse receipts show fill dates consistent with {o['true_age']:.0f} years (seller claims "
-                       f"{o['age_claim']}). Sample score {score:.0f}/100.")
+                       f"{o['age_claim']}). Sample score {score:.0f}/100.",
+                       party_id=lab["id"] if lab else None)
             return "Inspection ordered; the report is in your inbox. The offer stays open."
         if decision == "decline":
             e["status"] = "declined"
@@ -1466,7 +1755,9 @@ class World:
             prem = K.INSURANCE[self.insurance]["premium_year"]
             self._spend(prem, "Insurance renewal")
             self.insurance_paid_until = t + 52
-            self.email("Distillers Mutual", "Policy renewed", f"Your {self.insurance} policy renewed (${prem:,}).")
+            self.email(self._role_name("insurer"), "Policy renewed",
+                       f"Your {self.insurance} policy renewed (${prem:,}).",
+                       party_id=self.roles.get("insurer"))
         if self.penalties_due and self.cash > self.penalties_due:
             self._spend(self.penalties_due, "Penalties and assessed tax")
             self.penalties_due = 0.0
@@ -1491,9 +1782,10 @@ class World:
             if line["balance"] > line["limit"] + 1:
                 self._covenant_strikes += 1
                 self.stats["covenant_breaches"] += 1
-                self.email("Rickhouse Capital", "Borrowing base deficiency",
+                self.email(self._role_name("barrel_lender"), "Borrowing base deficiency",
                            f"Line balance ${line['balance']:,.0f} exceeds availability ${line['limit']:,.0f}. "
-                           "Cure by next month-end or we will sell collateral.")
+                           "Cure by next month-end or we will sell collateral.",
+                           party_id=self.roles.get("barrel_lender"))
                 if self._covenant_strikes >= 2:
                     self._forced_sale(line["balance"] - line["limit"])
             else:
@@ -1503,10 +1795,12 @@ class World:
             self.insolvent = True
             self.done = True
             self._event("Payroll bounced and the bank froze the accounts: the company is insolvent (receivership).")
-            self.email("First Commonwealth Bank", "Accounts frozen",
-                       "Your operating account is overdrawn and no credit is available. The accounts are frozen.")
+            self.email(self._role_name("sba"), "Accounts frozen",
+                       "Your operating account is overdrawn and no credit is available. The accounts are frozen.",
+                       party_id=self.roles.get("sba"))
         elif self.cash < 100_000:
-            self.email("Controller", "Cash warning", f"Cash is ${self.cash:,.0f}. Payroll and rent are at risk.")
+            self.email("Controller", "Cash warning", f"Cash is ${self.cash:,.0f}. Payroll and rent are at risk.",
+                       "system")
 
     def _forced_sale(self, shortfall: float) -> None:
         line = self.loans["barrel_line"]
@@ -1520,8 +1814,9 @@ class World:
         line["balance"] = max(0.0, line["balance"] - raised)
         self._covenant_strikes = 0
         self._event(f"Lender force-sold barrels at 60% of market, raising ${raised:,.0f}")
-        self.email("Rickhouse Capital", "Collateral liquidation",
-                   f"We sold barrels for ${raised:,.0f} and applied it to your line.")
+        self.email(self._role_name("barrel_lender"), "Collateral liquidation",
+                   f"We sold barrels for ${raised:,.0f} and applied it to your line.",
+                   party_id=self.roles.get("barrel_lender"))
 
     # ------------------------------------------------------------------ filing deadlines
     def periods_due(self, t: int) -> list[str]:
@@ -1562,8 +1857,9 @@ class World:
             end = dt.date(y + (m == 12), 1 if m == 12 else m + 1, 1)
             due = self.week_of(end + dt.timedelta(days=14))
             if key not in self.ops_reports and t == due + 1:
-                self.email("TTB National Revenue Center", f"Missing operations reports {key}",
-                           f"We have not received your monthly operations reports for {key}; they were due the 15th.")
+                self.email(self._role_name("ttb"), f"Missing operations reports {key}",
+                           f"We have not received your monthly operations reports for {key}; they were due the 15th.",
+                           party_id=self.roles.get("ttb"))
         for period in self.periods_due(t):
             _, end = self.period_end_week(period)
             due = self.week_of(end + dt.timedelta(days=14))
@@ -1575,5 +1871,6 @@ class World:
                 self.penalties_due += truth["tax"]
                 self.returns[period] = {"filed_week": None, "pg": 0.0, "tax": 0.0, "late": True, "assessed": True,
                                         "true_tax": truth["tax"], "true_pg": truth["proof_gallons"]}
-                self.email("TTB National Revenue Center", f"Assessment: {period}",
-                           f"No return received for {period}. Tax of ${truth['tax']:,.2f} assessed with penalties.")
+                self.email(self._role_name("ttb"), f"Assessment: {period}",
+                           f"No return received for {period}. Tax of ${truth['tax']:,.2f} assessed with penalties.",
+                           party_id=self.roles.get("ttb"))

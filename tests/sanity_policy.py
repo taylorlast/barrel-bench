@@ -76,8 +76,12 @@ def step(w: World) -> None:
         if aged and old and w.fg.get(aged[0]["id"], {}).get("bottles", 0) < 3_000:
             _try(w.bottle, aged[0]["id"], old[0]["id"], 2_000)
         ids = [l["id"] for l in unaged + aged if w.fg.get(l["id"], {}).get("bottles", 0) > 0]
-        for did in ("D-HOME", "D-REG1", "D-REG2"):
-            if w.distributors[did]["status"] in ("none", "declined", "dropped", "signed") and ids:
+        dists = [did for did, d in w.distributors.items()
+                 if d.get("kind") != "control" and d.get("status") in ("none", "declined", "dropped", "signed")
+                 and d.get("active", True) and int(d.get("enter_week", 0) or 0) <= w.t]
+        dists.sort(key=lambda i: w.distributors[i].get("threshold", 1.0))
+        for did in dists[:3]:
+            if ids:
                 _try(w.pitch_distributor, did, ",".join(ids))
     if w.barrels_on_hand() >= 150 and "barrel_line" not in w.loans:
         _try(w.apply_loan, "barrel_line", 1_500_000)

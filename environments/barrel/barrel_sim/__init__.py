@@ -1,6 +1,10 @@
-"""Barrel v2: a craft distillery start-up simulator with seeded exogenous randomness."""
+"""Barrel: a craft distillery start-up simulator with seeded exogenous randomness
+and a procedural counterparty market.
+"""
 
-from .scenario import FACTORS, PRESETS, SHOCKS, Scenario
-from .world import Refused, World
+from .errors import Refused
+from .negotiate import Bounds, Negotiator
+from .scenario import FACTORS, PRESETS, SHOCKS, CounterpartyConfig, Scenario
+from .world import World
 
-__all__ = ["FACTORS", "PRESETS", "SHOCKS", "Refused", "Scenario", "World"]
+__all__ = ["Bounds", "FACTORS", "Negotiator", "PRESETS", "SHOCKS", "CounterpartyConfig", "Refused", "Scenario", "World"]

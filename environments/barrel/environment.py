@@ -1,12 +1,14 @@
-"""Barrel v2: start up and run a craft whiskey distillery, as ten Plural Apps.
+"""Barrel v3: start up and run a craft whiskey distillery, as thirteen Plural Apps.
 
 Each App mirrors a system a real founder uses (calendar/briefing, email, TTB/state
 compliance portals, production log, rickhouse inventory, purchasing, sales/CRM, bank,
 HR, market data). They all act on one shared ``barrel_sim.World``: the ``office`` App
 builds it from the Task's ``scenario`` and publishes it; the others attach on reset
-(see barrel_sim/registry.py). Counterparties (TTB, state board, distributors, control
-boards, brokers, suppliers, bank, recruiter, staff) are behaviour models inside the
-World whose messages arrive in the ``inbox`` App. Exogenous randomness (17 factors,
+(see barrel_sim/registry.py). Counterparties (TTB specialists, the state board, distributors, control
+boards, brokers, suppliers, bankers, the recruiter, staff, press, retailers) are
+procedurally generated inside the World: identities and hidden economic types are
+sampled from the seed; an LLM (optional) only writes the words. Messages arrive
+in the ``inbox`` App; you can also call them and look them up in ``contacts``. Exogenous randomness (17 factors,
 each with its own seeded stream, presets and scheduled shocks) lives in
 barrel_sim/exogenous.py and is configured by the Task's ``scenario`` block.
 
@@ -60,8 +62,11 @@ class Office(App[OfficeState]):
         return ("You are the founder and CEO of a new craft whiskey distillery. It is Monday "
                 f"{b['date']}. You have ${b['cash']:,.0f} of seed equity and {sc.horizon_weeks} weeks "
                 "until the board values the company. Nothing is leased, licensed, built or hired yet. "
-                "Read your inbox and the office briefing, then run the company one week at a time "
-                "with office.end_week.")
+                "The people and firms you will deal with — distributors, farmers, coopers, bankers, "
+                "regulators, landlords — are not a fixed cast; they are generated for this world, they "
+                "remember how you treat them, and some of them will write to you first. Start with "
+                "your inbox, office.briefing, office.catalog and contacts.list_contacts, then run the "
+                "company one week at a time with office.end_week.")
 
     def _w(self) -> World:
         w = getattr(self, "_world", None)
@@ -118,9 +123,9 @@ class Office(App[OfficeState]):
 
     @action
     def catalog(self) -> dict[str, Any]:
-        """Reference sheet: sites you can lease, still packages, market salaries, insurance
-        policies and the spirit classes you can label."""
-        return R.catalog()
+        """Reference sheet: sites you can lease (with this world's landlords), still packages,
+        market salaries, insurance policies, spirit classes, and the lenders/insurers in the market."""
+        return R.catalog(self._w())
 
 
 # ============================================================================ attached Apps
@@ -143,8 +148,8 @@ class _Attached(App[_AttachedState]):
 
 
 class Inbox(_Attached):
-    """Email. Regulators, distributors, control boards, brokers, suppliers, the bank, the recruiter
-    and your staff write here; some emails need a decision by a reply-by date."""
+    """Email. Counterparties write here — some emails need a decision by a reply-by date.
+    Free-form send now reaches a named party (see contacts) and they will remember it."""
 
     @action
     def list_emails(self, unread_only: bool = False, limit: int = 20) -> list[dict[str, Any]]:
@@ -165,7 +170,9 @@ class Inbox(_Attached):
 
     @action
     def send(self, to: str, subject: str, body: str) -> str:
-        """Send a free-form email. Counterparties act on structured replies, not on free-form mail."""
+        """Send a free-form email to a party id, name or address from contacts. They will
+        remember it and usually acknowledge; formal deals still go through the structured tools
+        (a pitch, a listing, a PO reply, a loan application)."""
         return self._w().send_email(to, subject, body)
 
 
@@ -305,10 +312,18 @@ class Procurement(_Attached):
         return R.procurement(self._w())
 
     @action
-    def order(self, item: str, quantity: float) -> str:
+    def request_quote(self, item: str, supplier_id: str | None = None) -> dict[str, Any]:
+        """Ask for a quote. Omit supplier_id to see every supplier quoting `item` this week
+        (plus the posted spot). Pass a supplier id and that firm emails you their number."""
+        return self._w().request_quote(item, supplier_id)
+
+    @action
+    def order(self, item: str, quantity: float, supplier_id: str | None = None) -> str:
         """Place a PO: grain_bu, ngs_pg, new_barrels or glass_bottles. Paid now, delivered after the
-        quoted lead time (cooperage and glass lead times swing with supply shocks)."""
-        return self._w().place_order(item, quantity)
+        quoted lead time. Omit supplier_id to buy at the posted spot index (same as the weekly
+        quote); pass a supplier id from quotes/request_quote to buy from that firm, whose price
+        and allocation may differ."""
+        return self._w().place_order(item, quantity, supplier_id)
 
 
 class Sales(_Attached):
@@ -339,14 +354,16 @@ class Sales(_Attached):
 
     @action
     def pitch_distributor(self, distributor_id: str, label_ids: str) -> str:
-        """Pitch a distributor or importer (D-HOME, D-BIG, D-REG1, D-REG2, X-EU) with comma-separated
+        """Pitch a distributor or importer (ids from contacts.list_contacts(kind='distributor')
+        or kind='export'; control boards use apply_control_listing) with comma-separated
         approved labels (>= 300 bottles on hand; $2,500 of samples and travel). They answer by email
         in a few weeks. Pitch a signed account to add new labels."""
         return self._w().pitch_distributor(distributor_id, label_ids)
 
     @action
     def apply_control_listing(self, board_id: str, label_id: str) -> str:
-        """Submit a label to a control-state board (C-OH, C-PA). Boards decide quarterly."""
+        """Submit a label to a control-state board (ids from contacts, kind='control').
+        Boards decide quarterly."""
         return self._w().apply_control_listing(board_id, label_id)
 
     @action
@@ -424,3 +441,61 @@ class Market(_Attached):
         """Corn, energy, bulk new-fill barrel price (now and 13 weeks ago), prime rate, cooperage and
         glass lead times, EU tariff, and recent industry headlines. The future is not shown."""
         return R.market(self._w())
+
+
+class Contacts(_Attached):
+    """CRM / trade directory. Identities are generated for this world; hidden thresholds
+    and reservation prices are never shown."""
+
+    @action
+    def list_contacts(self, kind: str | None = None) -> list[dict[str, Any]]:
+        """Directory of counterparties that have entered the market. Filter by kind:
+        distributor, control, export, broker, grain, cooperage, glass, ngs, bank, lender,
+        insurer, recruiter, landlord, regulator, press, fabricator, retailer,
+        contract_client, investor, lab. Public fields only (name, contact, style,
+        relationship, whether they are still in the market)."""
+        return self._w().list_contacts(kind)
+
+    @action
+    def read_contact(self, party_id: str) -> dict[str, Any]:
+        """One contact card plus recent (public) interaction notes. Does not reveal
+        acceptance thresholds, reservation prices or other hidden constraints."""
+        return self._w().read_contact(party_id)
+
+
+class Phone(_Attached):
+    """Calls. Some people pick up; bureaucratic counterparties often ask you to write."""
+
+    @action
+    def place_call(self, party_id: str, topic: str, notes: str = "") -> dict[str, Any]:
+        """Call a party (id from contacts). topic: check_in, status, relationship,
+        negotiate, counter, pitch, quote, complaint or thanks. A verbal counter on an
+        open bulk bid can include a price in notes (e.g. '650'). Formal pitches, listings
+        and loan applications still have to go through their own tools."""
+        return self._w().call_party(party_id, topic, notes)
+
+    @action
+    def list_calls(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Recent call log: who, topic, whether they picked up, and a summary."""
+        return self._w().list_calls(limit)
+
+
+class Contracts(_Attached):
+    """Signed and pending contracts: leases, distribution agreements, loans, insurance,
+    harvest forwards, equipment, contract-distilling jobs."""
+
+    @action
+    def list_contracts(self, status: str | None = None) -> list[dict[str, Any]]:
+        """Contracts, optionally filtered by status ('signed' or 'pending')."""
+        return self._w().list_contracts(status)
+
+    @action
+    def read_contract(self, contract_id: str) -> dict[str, Any]:
+        """Full terms of one contract."""
+        return self._w().read_contract(contract_id)
+
+    @action
+    def sign(self, contract_id: str) -> str:
+        """Sign a pending contract. Most deals that you accept by email are already
+        executed; this is for anything that arrives as status=pending."""
+        return self._w().sign_contract(contract_id)

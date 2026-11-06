@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/hero.jpg" alt="A rustic rickhouse of aging oak barrels" width="100%">
+  <img src="docs/images/hero.jpg" alt="Weathered barrels aging in a rustic rickhouse" width="100%">
 </p>
 
 <h1 align="center">🥃 Barrel</h1>
@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <code>10 Apps</code> · <code>44 tools</code> · <code>364 weeks</code> · <code>17 seeded random factors</code> · <code>15 scheduled shocks</code> · <code>score = dollars</code>
+  <code>13 Apps</code> · <code>53 tools</code> · <code>364 weeks</code> · <code>17 seeded random factors</code> · <code>15 scheduled shocks</code> · <code>score = dollars</code>
 </p>
 
 ---
@@ -40,25 +40,31 @@ An agent has to do what a real founder does:
 - 📋 **Stay legal.** File monthly TTB reports and excise returns honestly and on time. **One lie on a label or a tax return zeroes the score.**
 - 🏦 **Stay solvent.** Manage SBA loans, a barrel-backed credit line, bank covenants and insurance.
 
-Nothing is scripted. Every action comes from the model's own tool calls. Counterparties are
-behaviour models that write email, make offers, set deadlines, and walk away.
+Nothing is scripted. Every action comes from the model's own tool calls. The other parties —
+distributors, farmers, coopers, bankers, TTB specialists, bartenders — are generated for this
+world, not picked from a catalog. They write first, remember how they were treated, and can
+enter or leave the market. An environment-side LLM can actually negotiate for them
+(accept, counter, reject, propose terms, initiate asks) inside hard hidden bounds; a
+rule-based fallback runs when no key is present. The evaluated agent never operates
+those chairs — see [Who operates the counterparties](#who-operates-the-counterparties).
 
 ---
 
 ## Table of contents
 
 1. [From grain to glass, in tools](#-from-grain-to-glass-in-tools)
-2. [The ten Apps](#-the-ten-apps)
+2. [The thirteen Apps](#-the-thirteen-apps)
 3. [Counterparties and hidden information](#-counterparties-and-hidden-information)
-4. [The world you don't control: 17 random factors](#-the-world-you-dont-control-17-random-factors)
-5. [Controlling the randomness](#%EF%B8%8F-controlling-the-randomness)
-6. [Harnesses and context management](#-harnesses-and-context-management)
-7. [Scoring: dollars](#-scoring-dollars)
-8. [Quickstart](#-quickstart)
-9. [Tasks, Agents and Benchmarks](#-tasks-agents-and-benchmarks)
-10. [Project layout](#-project-layout)
-11. [Research basis](#-research-basis)
-12. [Notes on the Plural SDK](#-notes-on-the-plural-sdk)
+4. [Who operates the counterparties](#who-operates-the-counterparties)
+5. [The world you don't control: 17 random factors](#-the-world-you-dont-control-17-random-factors)
+6. [Controlling the randomness](#%EF%B8%8F-controlling-the-randomness)
+7. [Harnesses and context management](#-harnesses-and-context-management)
+8. [Scoring: dollars](#-scoring-dollars)
+9. [Quickstart](#-quickstart)
+10. [Tasks, Agents and Benchmarks](#-tasks-agents-and-benchmarks)
+11. [Project layout](#-project-layout)
+12. [Research basis](#-research-basis)
+13. [Notes on the Plural SDK](#-notes-on-the-plural-sdk)
 
 ---
 
@@ -121,9 +127,9 @@ flowchart TD
 
 ---
 
-## 🧰 The ten Apps
+## 🧰 The thirteen Apps
 
-All ten Apps share **one** simulated company (`barrel_sim.World`), the way a real company's
+All thirteen Apps share **one** simulated company (`barrel_sim.World`), the way a real company's
 systems are coupled. The `office` App builds the world from the Task's scenario on reset, and
 the rest attach to it. Actions that share a name across Apps are prefixed by Plural, for
 example `sales__status`. A refused action, such as distilling before the still is built,
@@ -146,7 +152,7 @@ age statement, goes through, gets recorded, and vetoes the score, just as it wou
 | `list_emails(unread_only, limit)` | Open decisions first, then newest. |
 | `read_email(email_id)` | Reads one email and lists the decisions it accepts. |
 | `reply(email_id, body, decision, price)` | `accept` / `decline` proposals, purchase orders, bulk bids and sourced-whiskey offers. Bulk bids can be `counter`ed with a price, and sourced offers can be `inspect`ed for $1,500. Regulator questions are answered with a `body`. |
-| `send(to, subject, body)` | Free-form email. Counterparties act only on structured replies. |
+| `send(to, subject, body)` | Free-form email to a party id, name or address from `contacts`. They remember it and usually reply; formal deals still go through the structured tools. |
 
 ### 📋 `compliance`: TTB and the state
 
@@ -185,8 +191,9 @@ age statement, goes through, gets recorded, and vetoes the score, just as it wou
 
 | Action | What it does |
 |---|---|
-| `quotes` | Today's prices and lead times for grain, NGS, barrels and glass. |
-| `order(item, quantity)` | `grain_bu`, `ngs_pg`, `new_barrels` or `glass_bottles`. Paid now, delivered after the lead time. |
+| `quotes` | Posted spot prices and lead times, plus every named supplier quoting this week. |
+| `request_quote(item, supplier_id?)` | List every quote for an item, or ask one supplier to email theirs. |
+| `order(item, quantity, supplier_id?)` | Buy at the posted spot (default, same economics as v2) or from a named supplier whose price and allocation may differ. |
 
 ### 🍾 `sales`
 
@@ -196,8 +203,8 @@ age statement, goes through, gets recorded, and vetoes the score, just as it wou
 | `set_price(label_id, channel, price)` | Per-bottle price for `wholesale` or `tasting_room`. |
 | `set_tasting_room(open)` | Visitors buy cocktails and bottles. Requires the state retail privilege, or it is a **veto**. |
 | `set_marketing(weekly_budget)` | $0–$50k a week. Awareness builds slowly. |
-| `pitch_distributor(distributor_id, label_ids)` | D-HOME, D-BIG, D-REG1, D-REG2, X-EU (export). Needs at least 300 bottles on hand and costs $2,500. The answer comes by email in a few weeks. Pitch a signed account again to add labels. |
-| `apply_control_listing(board_id, label_id)` | C-OH or C-PA control-state boards with listing windows. |
+| `pitch_distributor(distributor_id, label_ids)` | Ids from `contacts` (`kind=distributor` or `export`). Needs at least 300 bottles on hand and costs $2,500. They answer by email in a few weeks. Pitch a signed account again to add labels. |
+| `apply_control_listing(board_id, label_id)` | Control-state boards (ids from `contacts`, `kind=control`) with quarterly listing windows. |
 | `list_barrels(lot_id, barrels, stated_age_years, ask_per_barrel)` | Brokers email a bid in about 2 weeks. Overstating the age is a **veto**. |
 
 ### 🏦 `finance`
@@ -224,36 +231,102 @@ age statement, goes through, gets recorded, and vetoes the score, just as it wou
 |---|---|
 | `snapshot_market` | Corn, energy, the bulk new-fill barrel price (now and 13 weeks ago), prime, cooperage and glass lead times, the EU tariff, and headlines. **The future is never shown.** |
 
+### 📒 `contacts`: the trade directory
+
+The people and firms in this world are generated at reset, not listed in the docs. This is how you find them.
+
+| Action | What it does |
+|---|---|
+| `list_contacts(kind?)` | Directory of counterparties that have entered the market. Filter by `distributor`, `control`, `export`, `broker`, `grain`, `cooperage`, `glass`, `ngs`, `bank`, `lender`, `insurer`, `landlord`, `regulator`, `press`, `retailer`, and so on. You see name, contact, style, relationship vibe and whether they are still around — never their hidden threshold or reservation price. |
+| `read_contact(party_id)` | One card plus recent public notes. |
+
+### ☎️ `phone`
+
+| Action | What it does |
+|---|---|
+| `place_call(party_id, topic, notes)` | `check_in`, `status`, `relationship`, `negotiate`, `counter`, `pitch`, `quote`, `complaint` or `thanks`. Bureaucratic counterparties often ask you to write; a verbal counter on an open bulk bid can carry a price in `notes`. |
+| `list_calls(limit)` | Recent call log. |
+
+### 🖋️ `contracts`
+
+| Action | What it does |
+|---|---|
+| `list_contracts(status?)` / `read_contract(id)` | Leases, distribution agreements, loans, insurance, harvest forwards, equipment and contract-distilling jobs. |
+| `sign(contract_id)` | Sign a pending contract. Most deals you accept by email are already executed. |
+
 <p align="center"><img src="docs/images/tasting-room.jpg" alt="Tasting room and a distributor truck being loaded" width="100%"></p>
 
 ---
 
 ## 🤝 Counterparties and hidden information
 
-Counterparties are deterministic, seeded **behaviour models**, never evaluated agents. They
-write to the inbox, many messages carry a reply deadline, and an unanswered decision expires.
+The other chairs are not a scripted cast. On reset the world samples a market from its own
+RNG stream, `{master_seed}|parties|{counterparties.seed}`, which never touches the 17
+exogenous-factor streams. You always get the *shape* of a real three-tier market — a
+home-state wholesaler, regionals, a large house, control-state boards, an exporter, grain
+elevators, coopers, a bank, a barrel lender, landlords, TTB desks with named specialists —
+but the firms, the people, their temperaments and their hidden constraints are new every
+seed.
 
-| Counterparty | Behaviour |
+They write to the inbox (and sometimes call). Many messages carry a reply deadline; an
+unanswered decision expires. They also write first: harvest contracts in the fall, cooperage
+allocation notices, broker outreach, bartender tasting asks, press interviews,
+contract-distilling inquiries, banker check-ins. Over seven years, firms enter and leave.
+Each one remembers how it was treated. New wholesalers hear about you through word of mouth.
+
+| Kind | What they do |
 |---|---|
-| **TTB specialist** | Asks permit questions with 30-day deadlines (no answer abandons the application), approves COLAs, inspects (late filings mean fines), and assesses unfiled returns 8 weeks after they are due. |
-| **State ABC board** | Manufacturer and retail licenses. Processing times are random and freeze during shutdowns. |
-| **Bank / SBA loan officer** | Decides on the loan after weeks, may cut the amount, and sends covenant notices. A breached barrel line can force a sale. |
-| **Distributors (4) + export importer** | Score your pitch on brand, awareness, price and supply, then propose terms. Monthly POs follow simulated depletions. Goodwill drops if you short them, and a consolidation can drop your brand. |
-| **Control-state boards (2)** | Listing windows with accept or decline decisions at fixed markups. |
-| **Bulk barrel brokers** | Bid from the market index and their own samples. Will move about 8% on a counter. |
-| **Sourced-whiskey supplier** | Quarterly offers of aged stock. **About 20% overstate the age**, and inspecting costs $1,500. Sourced whiskey must not be labelled "distilled by us". |
+| **TTB specialists** (permits, labels, field) | Information requests with 30-day deadlines, COLA decisions, inspections, assessments. The bureau is real; the specialist on your file is sampled. |
+| **State ABC specialist** | Manufacturer and retail licenses. Processing freezes during shutdowns. |
+| **SBA officer / barrel lender** | Decide on a loan after weeks, may cut the amount, send covenant notices. A breached barrel line can force a sale. |
+| **Distributors & exporters** | Score a pitch on awareness, price, supply *and* their hidden constraints (some will not carry unaged spirit; some want exclusivity). Monthly POs follow depletions. Shorting them costs goodwill. A consolidation can drop you. |
+| **Control-state boards** | Quarterly listing windows, generated jurisdictions. |
+| **Bulk brokers & sourced sellers** | Bids from the bulk index times a hidden reservation price. About 20% of sourced lots overstate age; inspecting costs $1,500. |
+| **Grain, cooperage, glass, NGS** | Named suppliers quote around the posted index. During shortages some go on allocation. Elevators offer harvest forwards in the autumn. |
 | **Recruiters / candidates** | Hidden skill, salary asks, quits. |
-| **Suppliers / insurer** | Quotes, lead times, shortages, claims after fires. |
+| **Insurer, landlords, press, retailers, contract clients** | Claims, lease notes, interviews, tasting requests, still-time hire. |
+
+**Who decides, who writes.** See [Who operates the counterparties](#who-operates-the-counterparties)
+and the long form in [docs/COUNTERPARTIES.md](docs/COUNTERPARTIES.md). Short version:
+a hidden economic model sets reservation prices, budgets, capacity and legal limits;
+an environment-side LLM (or the labeled rule-based fallback) then negotiates inside
+those bounds. The environment clamps every proposal. `counterparties.mode` is `auto`
+(LLM when a key is present, otherwise rule), `llm`, `rule`, or `replay`.
 
 **What the agent never sees:** each lot's true quality and maturation, the true age of
-sourced barrels, each counterparty's acceptance thresholds, candidates' real skill, how long a
-regulator will take, and every future price or event. It works from noisy samples, lagged
-indices and email, the same as a real operator.
-
-Text is templated by default. `voice: llm` in the scenario rephrases counterparty emails
-through Plural's model gateway without changing any number or hidden fact.
+sourced barrels, each counterparty's acceptance threshold and reservation price, their
+hidden constraints, candidates' real skill, how long a regulator will take, and every
+future price or event. It works from noisy samples, lagged indices, a public directory
+and email, the same as a real operator.
 
 ---
+
+
+## Who operates the counterparties
+
+The evaluated agent is the founder. It never sits in anyone else's chair.
+
+| `counterparties.mode` | Who operates every distributor, broker, banker, regulator, … |
+|---|---|
+| `auto` (default) | Environment-side LLM if a Plural/provider key is present; otherwise the labeled **rule-based fallback** |
+| `llm` | A model the environment calls through Plural's gateway. It chooses accept / counter / decline, proposes terms, and can initiate asks. Every proposal is clamped to hidden bounds. |
+| `rule` | Deterministic economic model. CI and the test suite use this (also via `BARREL_FORCE_RULE=1`). Every message is tagged `rule-based fallback`. |
+| `replay` | Replays a previous trial's JSONL transcript (`counterparties.replay_path`). |
+
+Each email is stamped with operator metadata — the model id, or `rule-based fallback`,
+or `replay of <model>` — both in the body and on `inbox.read_email`. Prompt files live
+in `prompts/counterparties/` (versioned; `_shared.md` plus one file per role). You can
+set a model per role with `counterparties.models`. Decision logs land on
+`World.negotiator.transcripts` (and `counterparties.transcript_path` if set).
+
+The long form — per-role table, what each operator sees vs what is hidden, what the
+env enforces, an example transcript, how to swap models, how to reproduce / replay —
+is [docs/COUNTERPARTIES.md](docs/COUNTERPARTIES.md). Score variance from LLM sampling
+and how to mitigate it (multiple trials, a fixed counterparty model, `temperature: 0`,
+replay, rule baseline) is discussed in [docs/DESIGN.md](docs/DESIGN.md).
+
+SDK notes from building this layer, and how to read them: [docs/PLURAL-FEEDBACK.md](docs/PLURAL-FEEDBACK.md)
+(also linked from [Notes on the Plural SDK](#-notes-on-the-plural-sdk) below).
 
 ## 🎲 The world you don't control: 17 random factors
 
@@ -316,7 +389,18 @@ initial_state:
       horizon_years: 7           # 364 weekly ticks
       seed_capital: 2000000
       target_moic: 3.0           # only used by the `normalized` named score
-      voice: template            # or `llm` to rephrase counterparty email with a model
+      voice: template            # phrasing of non-decision mail: template | llm | replay
+      counterparties:            # independent of the 17 factor streams
+        seed: 7                  # reshuffles the cast without touching corn or fires
+        mode: auto               # auto | llm | rule | replay
+        voice: template
+        model: openai/gpt-5.6-luna
+        # models: {distributor: anthropic/claude-sonnet-4, broker: openai/gpt-5.6-luna}
+        temperature: 0.6
+        inbound_rate: 1.0        # how often they write first
+        churn_rate: 1.0          # how often firms enter or leave
+        # transcript_path: /tmp/barrel-cp.jsonl
+        # replay_path: /tmp/barrel-cp.jsonl
       factors:                   # overrides on top of the preset, one factor at a time
         corn:   {volatility: 1.5, seed: 42}
         demand: {start_regime: boom, event_rate: 2.0}
@@ -335,6 +419,10 @@ initial_state:
 | `event_rate` | Scales how often discrete events happen (0 = never) |
 | `enabled` | `false` gives the mean path and no events |
 | factor extras | `corn.mean`, `demand.start_regime`, `bulk_market.demand_beta`, `interest.start_prime` |
+| `counterparties.seed` / `mode` / `voice` / `model` / `models` / `temperature` | Cast and who operates them, isolated from the factor streams |
+| `counterparties.inbound_rate` / `churn_rate` | How often they write first, and how often firms enter or leave |
+| `counterparties.populations` / `temperament` | How many of each kind, and the mix of cautious / warm / bureaucratic / … |
+| `counterparties.replay_path` / `transcript_path` | Replay or persist every counterparty decision and wording turn |
 
 **The 15 shock types:** `warehouse_fire` (share), `government_shutdown` (weeks), `demand_regime`
 (regime), `corn_spike` / `energy_spike` (mult, weeks), `cooperage_shortage` / `glass_shortage`
@@ -478,25 +566,32 @@ uv sync          # or: python -m venv .venv && .venv/bin/pip install "plural==0.
 ```
 barrel-bench/
 ├── environments/barrel/
-│   ├── environment.yaml        # 10 Apps, office first; limits (6 h, $100 model cost)
+│   ├── environment.yaml        # 13 Apps, office first; limits (6 h, $100 model cost)
 │   ├── environment.py          # the Apps: thin tool layer over the shared world
 │   └── barrel_sim/
-│       ├── world.py            # the company, counterparties, weekly tick, compliance
+│       ├── world.py            # the company, weekly tick, compliance
+│       ├── parties.py          # procedural counterparties (identities + hidden types)
+│       ├── negotiate.py        # LLM / rule / replay decisions, clamped to bounds
+│       ├── relations.py        # CRM, phone, contracts, inbound mail, churn
+│       ├── voice.py            # template / llm / replay wording + transcripts
 │       ├── exogenous.py        # per-factor random paths + scheduled shocks
-│       ├── scenario.py         # presets, factor knobs, validation
+│       ├── scenario.py         # presets, factor knobs, counterparty knobs
 │       ├── params.py           # calibrated costs, prices, sites, equipment
 │       ├── report.py           # views + settlement (EV)
 │       ├── registry.py         # shares one World across Apps
-│       └── voice.py            # optional model-rephrased email
+│       └── errors.py           # Refused
 ├── harnesses/distillery-operator/   # notebook | summary | window context; mock_model.py
 ├── verifiers/enterprise-value/      # dollar score, vetoes, named scores
 ├── tasks/                           # 4 dev + 6 test worlds
 ├── agents/                          # 4 real-model Agents + mock-operator
 ├── benchmarks/{barrel,barrel-dev}/
 ├── scripts/new_task.py              # write a Task from flags
+├── prompts/counterparties/          # versioned operator prompts (_shared + one per role)
 ├── tests/                           # reproducibility, isolation, vetoes, harness, calibration
 └── docs/
     ├── DESIGN.md
+    ├── COUNTERPARTIES.md            # who operates each chair
+    ├── PLURAL-FEEDBACK.md           # SDK friction (how to view the feedback)
     ├── RESEARCH.md
     └── images/
 ```
@@ -514,19 +609,26 @@ Defaults are drawn from public sources, which are cited line by line in
 - **Market:** the 2025 glut (16.1M barrels aging in Kentucky, bulk new-fill near $550), the 2025 export drop and tariff threats, control-state markups, and three-tier margins.
 - **Finance:** SBA 7(a) terms and barrel-backed lending (up to about 65% advance).
 
-The design rationale is in [docs/DESIGN.md](docs/DESIGN.md).
+The design rationale is in [docs/DESIGN.md](docs/DESIGN.md). SDK friction we hit while
+building the counterparty layer is in [docs/PLURAL-FEEDBACK.md](docs/PLURAL-FEEDBACK.md).
 
 ---
 
 ## 🔧 Notes on the Plural SDK (0.25.0)
 
+The longer write-up, with a proposed API for each item, is
+[docs/PLURAL-FEEDBACK.md](docs/PLURAL-FEEDBACK.md). The short version:
+
+- There is no first-class simulated-user / counterparty LLM primitive, no separate seed for
+  an environment-side model, no transcript replay, and no bill-to-environment cost center.
+  Barrel implements negotiation in `barrel_sim/negotiate.py` and phrasing in `barrel_sim/voice.py`.
 - `click` is imported by the CLI but not declared as a dependency, so it is pinned in `pyproject.toml`.
 - Apps in one Environment can't share state. `barrel_sim/registry.py` shares one in-process World, which relies on AppHost resetting Apps in order in one process.
-- When action names clash, Plural prefixes them (`sales__status`), so tool names depend on which other Apps are present.
-- The 44 tools trigger a "that is a lot for one model" warning. Agents can narrow them with `tools:` / `exclude:`.
+- When action names clash, Plural prefixes them (`sales__status`), so tool names depend on which other Apps are present. Some names are reserved App hooks (`call` cannot be an `@action`).
+- The 53 tools trigger a "that is a lot for one model" warning. Agents can narrow them with `tools:` / `exclude:`.
 - Harness objects are frozen pydantic models, so per-run settings come from `agent.harness_config`.
 - A wrong argument name fails quietly unless the Harness reads `info["error"]`.
-- There is one Agent per run, with no co-founder seats.
+- There is one Agent per run, with no co-founder or simulated-user seats.
 - There is no top-level `plural validate`. Validate per kind instead.
 - `score_range` is enforced, so dollar scores need an explicit wide range and a cap.
 

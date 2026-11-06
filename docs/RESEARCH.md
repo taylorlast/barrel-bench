@@ -46,3 +46,25 @@ Gathered Nov 2, 2026. Numbers are the "real-ish" defaults Barrel uses; each line
 
 ## Simplifications (deliberate)
 Semi-monthly excise returns are modeled as monthly; one state of operation plus out-of-state distributors; no formula approvals for flavored products; insurance is one package policy; the founder's own salary is not paid.
+
+
+## Counterparties (who a founder actually deals with)
+
+Gathered November 2026. Barrel no longer ships a fixed cast (no "Bluegrass Beverage Co." sitting
+in every world). The *kinds* of seats and the economics those seats use are grounded here; the
+people occupying them are sampled per world.
+
+| Fact | Barrel default | Source |
+|---|---|---|
+| US spirits are sold through the three-tier system (producer → wholesaler → retailer) in license states. Opening a new market means pitching a wholesaler, not selling to stores directly. | `sales.pitch_distributor` against procedurally generated houses; monthly POs follow simulated depletions | [DISCUS three-tier explainer](https://www.distilledspirits.org/policy/the-three-tier-system/), [TTB trade practices](https://www.ttb.gov/public-information/trade-practices) |
+| Control states act as the wholesaler (and often the retailer). Listing windows, not relationship pitches, decide what gets on the shelf; markups are published. | Generated control boards with quarterly listing cycles; `apply_control_listing` | [NABCA](https://www.nabca.org/sites/default/files/assets/files/control-state/Control_State_Datasets_Overview_SAM2%201%207%202025.pdf) (already cited) |
+| A wholesaler pitch is samples, a sell sheet and a depletion story. Program allowances of mid-to-high twenties percent are common; they will drop a slow brand after a merger. | $2,500 pitch cost; generated `margin` ~27–31%; consolidation factor can drop a signed house | Industry practice; merger/portfolio cuts after wholesaler consolidation are a recurring trade-press theme |
+| Independent regional houses and a few large multi-state books exist alongside each other. A new craft brand usually wins the home-state independent first. | Opening market always has a home-state seat (easier threshold), regionals, and a pickier large house; extra houses may enter later | Structural, not a named-company catalog (we do not simulate Southern Glazer's or RNDC as themselves) |
+| TTB assigns specialists and investigators to a DSP file; questions have statutory response windows. COLAs Online and Field Operations are different desks. | Three regulator seats (permits, labels, field) with generated specialist names at the real bureau desks | [TTB National Revenue Center](https://www.ttb.gov/nrc), [TTB COLAs Online](https://www.ttb.gov/regulated-commodities/labeling/colas) |
+| Grain is bought cash or on a harvest-time forward from an elevator; basis moves with futures. | Posted spot follows the `corn` path; named elevators quote around that index; harvest-contract emails arrive around weeks 36–44 | Standard US grain marketing (forward cash contracts); corn path already cited above |
+| Cooperages allocate barrels in tight markets rather than quoting freely. | During long lead times, cheaper/cautious coopers go `available: false` and email an allocation notice | Matches the shortage behaviour already calibrated to [Barrels Direct](https://www.barrelsdirect.com/product/new-53-gallon-200l-american-oak-classic/) / [Barrel Mill](https://thebarrelmill.com/product/53-gallon-oak-barrel/) lead times |
+| Kentucky and Indiana bulk-whiskey desks broker warehouse receipts; age claims are only as good as the paper. About one in five sourced offers in Barrel overstates age — inspection (paper + sample) is how a real buyer checks. | Generated brokers bid from the bulk index times a hidden `reservation_mult`; sourced lots can be inspected for $1,500 | [Herald-Leader bulk](https://www.kentucky.com/news/business/article312418416.html) (already cited) |
+| Relationships compound. A wholesaler you short, a banker you surprise, a landlord you never call — they remember, and they talk. | Each party stores a rolling memory and a goodwill number; new firms enter with a first impression based on distributor-wide reputation | Qualitative industry practice; modeled, not fitted to a published dataset |
+| Contract distilling (using someone else's still while yours is busy, or hiring a larger plant) is a common craft bridge. | Inbound inquiries once you are permitted and commissioned; accepting consumes still time for cash | Common ADI / craft-distilling practice |
+
+State brand registration (a second paperwork step on top of a federal COLA before product can ship into some states) is bundled into the distribution agreement rather than modeled as its own multi-week queue, so the weekly loop stays tractable. Control-state listings remain a separate window.

@@ -62,19 +62,3 @@ INSURANCE = {
     "basic": {"premium_year": 26_000, "cover": 0.70, "deductible": 50_000, "bi_weekly": 0},
     "full": {"premium_year": 48_000, "cover": 0.95, "deductible": 25_000, "bi_weekly": 6_000},
 }
-
-DISTRIBUTORS = {
-    "D-HOME": {"name": "Bluegrass Beverage Co. (home state)", "kind": "distributor", "size": 1.0, "threshold": 0.30,
-               "margin": 0.28},
-    "D-BIG": {"name": "Continental Wine & Spirits (5 states)", "kind": "distributor", "size": 3.2, "threshold": 0.62,
-              "margin": 0.30},
-    "D-REG1": {"name": "Ohio Valley Craft Distributors", "kind": "distributor", "size": 1.2, "threshold": 0.42,
-               "margin": 0.28},
-    "D-REG2": {"name": "Great Lakes Fine Spirits", "kind": "distributor", "size": 1.4, "threshold": 0.48,
-               "margin": 0.29},
-    "C-OH": {"name": "Buckeye State Liquor Board (control)", "kind": "control", "size": 1.3, "threshold": 0.45,
-             "margin": 0.0},
-    "C-PA": {"name": "Keystone Liquor Control Board (control)", "kind": "control", "size": 1.6, "threshold": 0.52,
-             "margin": 0.0},
-    "X-EU": {"name": "EuroCask Imports (EU export)", "kind": "export", "size": 1.1, "threshold": 0.50, "margin": 0.25},
-}

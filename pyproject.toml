@@ -1,7 +1,7 @@
 [project]
 name = "barrel-bench"
-version = "0.2.0"
-description = "Barrel: start up and run a craft whiskey distillery (v2) for Plural."
+version = "0.3.0"
+description = "Barrel: start up and run a craft whiskey distillery (v3) for Plural."
 requires-python = ">=3.11"
 # click is imported by plural 0.25.0's CLI but not declared by it (typer 0.27 no longer pulls it in).
 dependencies = ["plural==0.25.0", "click>=8.1", "pyyaml>=6"]
